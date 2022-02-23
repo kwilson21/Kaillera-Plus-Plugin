@@ -1,1 +1,5 @@
 nimcache/
+*.dll
+*.h
+*.c
+*.exe
