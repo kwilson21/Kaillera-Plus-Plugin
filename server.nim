@@ -6,6 +6,7 @@ import stew/[assign2]
 
 type
   KailleraUser = object
+    isOwner: bool
     connection: Connection
     ping: int
     delay: int
@@ -23,44 +24,52 @@ type
     spectators: seq[ref KailleraUser]
     controllerData: array[4, string]
 
-var
-  server = newReactor("0.0.0.0", 27886)
-  games = newSeq[ref KailleraGame]()
-  isPlaying: bool = false
-  controllerDataPacket: string
-  pCount: int = 0
+proc runServer*(): void {.thread.} =
 
-let
-  connectionType: int = 1
+  var
+    server = newReactor("0.0.0.0", 27886)
+    games = newSeq[ref KailleraGame]()
+    isPlaying: bool = false
+    controllerDataPacket: string
+    pCount: int = 0
+    stopServer: bool = false
 
-proc sendMsg(connection: Connection, msg: string): void =
-  # echo fmt"[sent]{msg}"
-  server.send(connection, msg & "END")
+  let
+    connectionType: int = 1
 
-proc broadcastMsg(msg: string): void =
-  for i in 0..<games[0].playerCount:
-    games[0].users[i].connection.sendMsg(msg)
+  proc sendMsg(connection: Connection, msg: string): void =
+    # echo fmt"[sent]{msg}"
+    server.send(connection, msg & "END")
 
-proc findPlayer(users: array[0..3, ref KailleraUser],
-    userConnection: Connection): ref KailleraUser =
-  for i in 0..<users.len:
-    if users[i].connection == userConnection:
-      return users[i]
+  proc broadcastMsg(msg: string): void =
+    for i in 0..<games[0].playerCount:
+      games[0].users[i].connection.sendMsg(msg)
 
-proc synced(): bool =
-  return (isPlaying and games.len > 0 and all(games[0].controllerData[
-        0..<games[0].playerCount], proc(x: string): bool = x != ""))
+  proc findPlayer(users: array[0..3, ref KailleraUser],
+      userConnection: Connection): ref KailleraUser =
+    for i in 0..<users.len:
+      if users[i].connection == userConnection:
+        return users[i]
 
-proc sendSyncedInput(): void =
-  if synced():
-    controllerDataPacket.assign(join(games[0].controllerData))
-    # echo fmt"Sending data {controllerDataPacket=} {games[0].controllerData=}"
-    broadcastMsg("INPUT" & controllerDataPacket)
+  proc synced(): bool =
+    return (isPlaying and games.len > 0 and all(games[0].controllerData[
+          0..<games[0].playerCount], proc(x: string): bool = x != ""))
+
+  proc sendSyncedInput(): void =
+    if synced():
+      controllerDataPacket.assign(join(games[0].controllerData))
+      # echo fmt"Sending data {controllerDataPacket=} {games[0].controllerData=}"
+      broadcastMsg("INPUT" & controllerDataPacket)
+      games[0].controllerData.assign(@["", "", "", ""])
+
+  proc resetGame(): void =
+    if isPlaying:
+      isPlaying = false
     games[0].controllerData.assign(@["", "", "", ""])
 
-proc startGame(): void =
-  if games.len > 0 and games[0].playerCount == 2 and not isPlaying and pCount ==
-      (4 * games[0].playerCount):
+  proc startGame(): void =
+    # if games.len > 0 and games[0].playerCount == 2 and not isPlaying and pCount ==
+    #     (4 * games[0].playerCount):
     echo "Starting game..."
 
     for i in 0..<games[0].playerCount:
@@ -83,10 +92,10 @@ proc startGame(): void =
     broadcastMsg("START GAME")
     isPlaying = true
 
-proc runServer(): void =
+
   echo "Listenting for connections..."
 
-  while true:
+  while not stopServer:
     server.tick()
     for connection in server.newConnections:
       echo "[new] ", connection.address
@@ -96,6 +105,7 @@ proc runServer(): void =
       kailleraUser.frameCount = 0
 
       if games.len == 0:
+        kailleraUser.isOwner = true
         kailleraUser.playerNumber.assign(0)
 
         var playerArray: array[4, ref KailleraUser]
@@ -109,7 +119,8 @@ proc runServer(): void =
         kailleraGame.delay = 1
 
         games.add(kailleraGame)
-      elif games.len > 0:
+      elif games.len > 0 and games[0].playerCount < 4:
+        kailleraUser.isOwner = false
         inc games[0].playerCount
 
         let playerNumber = games[0].playerCount - 1
@@ -140,6 +151,16 @@ proc runServer(): void =
       elif msg.startsWith("PONG"):
         user.ping = (user.connection.stats.latencyTs.avg()*1000).int
         inc pCount
+      elif msg.startsWith("LEAVE GAME"):
+        resetGame()
+        if user.isOwner:
+          stopServer = true
+          break
+        else:
+          dec games[0].playerCount
+      elif msg.startsWith("START GAME"):
+        if user.isOwner:
+          startGame()
       elif msg.startsWith("READY TO PLAY"):
         broadcastMsg("ALL READY")
       elif msg.startsWith("INPUT"):
@@ -158,7 +179,7 @@ proc runServer(): void =
 
         sendSyncedInput()
 
-    startGame()
+    # startGame()
 
 when isMainModule:
   runServer()
