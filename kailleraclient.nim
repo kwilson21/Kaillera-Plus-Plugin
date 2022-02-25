@@ -2,13 +2,13 @@
 # C:\Users\kazon\Downloads\32b\nim-1.6.2\bin\nim c -d:danger -d:noSignalHandler --noMain:off -l:-static --app:lib --mm:arc --threads:on --tlsEmulation:off --passC:-ffast-math -d:useMalloc -o:plugin.dll kailleraclient.nim
 
 import winim/lean
-import std/[times, os, strutils, strformat, threadpool, sugar, browsers, httpclient]
+import std/[times, os, strutils, strformat, sugar, browsers, httpclient]
 import netty
 import stew/[assign2]
 import nimx/[window, layout, button, text_field]
 import asyncdispatch, asynchttpserver, ws
 
-from server import runServer
+import server
 
 when appType == "lib":
   {.pragma: dllexp, stdcall, exportc, dynlib.}
@@ -28,12 +28,12 @@ type
     notAuth, authSuccess, authFailed
 
 const
+  WS_HOST = "localhost:5000"
   HOST = "localhost"
   # HOST = "192.168.1.102"
   PORT = 27886
   MAX_INCOMING_BUFFER = 15
   MAX_PLAYERS = 4
-  CLIENT_ID = 945835705643446272
 
 
 var
@@ -64,10 +64,6 @@ var
   startedGame: bool = false
 
   mainHWND: HWND
-
-  mainWindow: Window
-
-  wsServerIP: string
 
   kInfo: ptr kailleraInfos
 
@@ -197,7 +193,7 @@ proc gameInit(): void =
     if GetAsyncKeyState(27) == -32767:
       sizeOfEinput.assign(-1)
     if gameCount == 0 or sizeOfEInput == -1:
-      MessageBox(0,"Never received ready signal. Game Ended!","gameInit()",0)
+      MessageBox(0, "Never received ready signal. Game Ended!", "gameInit()", 0)
       # MessageDialog(frame, "Never received ready signal. Game Ended!",
       #     "gameInit()").showModal()
       sizeOfEinput.assign(-1)
@@ -231,12 +227,13 @@ proc stopGame(): void =
     gamePlaying = false
     sleep(20)
 
-proc startWebsock(webSocketMsgChannel: ptr Channel[string], clientMsgChannel: ptr Channel[string]) {.async.} =
+proc startWebsock(webSocketMsgChannel: ptr Channel[string],
+    clientMsgChannel: ptr Channel[string]) {.async.} =
   {.cast(gcsafe).}:
     var userID: string
-    
+
     try:
-      var webSocket = await newWebSocket("ws://localhost:5000/ws/auth")
+      var webSocket = await newWebSocket(fmt"ws://{WS_HOST}/ws/auth")
       await webSocket.send("START AUTH")
       while webSocket.readyState == Open:
         let msg = await webSocket.receiveStrPacket()
@@ -246,13 +243,14 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string], clientMsgChannel: pt
           await webSocket.send(wMsg)
           if wMsg == "LOGOUT":
             webSocket.close()
+            return
 
         if msg.startsWith("AUTH URL"):
           let authUrl = msg[8..^1]
           openDefaultBrowser(authUrl)
         elif msg.startsWith("AUTH ID"):
           authID = msg[7..^1]
-          MessageBox(0,authID,"Auth ID",0)
+          MessageBox(0, authID, "Auth ID", 0)
         elif msg.startsWith("USER ID"):
           userID = msg[7..^1]
         elif msg.startsWith("AUTH SUCCESS"):
@@ -261,11 +259,11 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string], clientMsgChannel: pt
     except:
       authState = AuthState.authFailed
       let eMsg = getCurrentExceptionMsg()
-      MessageBox(0,eMsg,"Exception",0)
+      MessageBox(0, eMsg, "Exception", 0)
       return
 
     try:
-      webSocket = await newWebSocket(fmt"ws://localhost:5000/ws/{userID}")
+      webSocket = await newWebSocket(fmt"ws://{WS_HOST}/ws/{userID}")
       while webSocket.readyState == Open:
         let msg = await webSocket.receiveStrPacket()
 
@@ -274,12 +272,13 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string], clientMsgChannel: pt
           await webSocket.send(wMsg)
           if wMsg == "LOGOUT":
             webSocket.close()
-        
+
         if msg.startsWith("CREATE GAME"):
           let host = getWanIP()
           await webSocket.send(fmt"SERVER IP{host}")
           serverThread.createThread(runServer)
-          clientThread.createThread(recvLoop, (clientMsg.addr, outputChannel.addr, HOST))
+          clientThread.createThread(recvLoop, (clientMsg.addr,
+              outputChannel.addr, HOST))
           clientKaThread.createThread(clientKeepAlive, clientMsg.addr)
         elif msg.startsWith("LEAVE GAME"):
           stopGame()
@@ -292,55 +291,56 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string], clientMsgChannel: pt
           clientMsgChannel[].send("START GAME")
         elif msg.startsWith("JOIN GAME"):
           let host = msg[9..^1]
-          clientThread.createThread(recvLoop, (clientMsg.addr, outputChannel.addr, host))
+          clientThread.createThread(recvLoop, (clientMsg.addr,
+              outputChannel.addr, host))
           clientKaThread.createThread(clientKeepAlive, clientMsg.addr)
         elif msg.startsWith("GAME LIST"):
           await webSocket.send(fmt"GAME LIST{kInfo.gameList}")
     except:
       let eMsg = getCurrentExceptionMsg()
-      MessageBox(0,eMsg,"Exception",0)
+      MessageBox(0, eMsg, "Exception", 0)
       return
 
 proc runWebSocket(): void {.thread.} =
   waitFor startWebsock(addr webSocketMsgChannel, addr clientMsg)
-  
+
 proc createFrame(): void =
-  mainWindow = newWindow(newRect(50, 50, 300, 150))
+  let mainWindow = newWindow(newRect(50, 50, 300, 150))
   mainWindow.makeLayout: # DSL follows
     - Label as labelText: # Add a view of type Label to the window. Create a local reference to it named greetingLabel.
-        center == super # center point of the label should be equal to center point of superview
-        width == 100 # width should be 300 points
-        height == 5 # well, this should be obvious now
-        text: "Click to login" # property "text" should be set to whatever the label should display
+      center == super # center point of the label should be equal to center point of superview
+      width == 100 # width should be 300 points
+      height == 5 # well, this should be obvious now
+      text: "Click to login" # property "text" should be set to whatever the label should display
     - Button as disconnectButton: # Add a view of type Button. We're not referring to it so it's anonymous.
-        centerX == super # center horizontally
-        top == prev.bottom + 5 # the button should be lower than the label by 5 points
-        width == 100
-        height == 25
-        title: "Logout"
-        enabled: false
-        onAction:
-            webSocketMsgChannel.send("LOGOUT")
-            connectButton.enable
-            disconnectButton.disable
-            labelText.text = "Click to login"
+      centerX == super # center horizontally
+      top == prev.bottom + 5 # the button should be lower than the label by 5 points
+      width == 100
+      height == 25
+      title: "Logout"
+      enabled: false
+      onAction:
+        webSocketMsgChannel.send("LOGOUT")
+        connectButton.enable
+        disconnectButton.disable
+        labelText.text = "Click to login"
     - Button as connectButton: # Add a view of type Button. We're not referring to it so it's anonymous.
-        centerX == super # center horizontally
-        top == prev.bottom + 5 # the button should be lower than the label by 5 points
-        width == 100
-        height == 25
-        title: "Login"
-        onAction:
-          webSocketThread.createThread(runWebSocket)
-          while authState != AuthState.authSuccess:
-            sleep(5)
-          if authState != AuthState.authFailed:
-            connectButton.disable
-            disconnectButton.enable
-            labelText.text = "Success!"
-          else:
-            authState = AuthState.notAuth
-            labelText.text = "Click to login"
+      centerX == super # center horizontally
+      top == prev.bottom + 5 # the button should be lower than the label by 5 points
+      width == 100
+      height == 25
+      title: "Login"
+      onAction:
+        webSocketThread.createThread(runWebSocket)
+        while authState != AuthState.authSuccess:
+          sleep(5)
+        if authState != AuthState.authFailed:
+          connectButton.disable
+          disconnectButton.enable
+          labelText.text = "Success!"
+        else:
+          authState = AuthState.notAuth
+          labelText.text = "Click to login"
 
 proc kailleraGetVersion(version: cstring): void {.dllexp,
     extern: "_kailleraGetVersion".} =
@@ -400,7 +400,8 @@ proc kailleraModifyPlayValues(values: pointer, size: cint): cint {.dllexp,
         clientMsg.send("KEEP ALIVE")
       elif w == 15 and returnInputSize:
         sizeOfEinput.assign(-1)
-        MessageBox(0,"Game Ended!  Didn't receive a response for 15s.","Game Ended!",0)
+        MessageBox(0, "Game Ended!  Didn't receive a response for 15s.",
+            "Game Ended!", 0)
         # MessageDialog(frame, "Game Ended!  Didn't receive a response for 15s.",
         #     "Game Ended!").showModal()
         return sizeOfEInput.cint

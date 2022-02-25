@@ -32,7 +32,6 @@ proc runServer*(): void {.thread.} =
     isPlaying: bool = false
     controllerDataPacket: string
     pCount: int = 0
-    stopServer: bool = false
 
   let
     connectionType: int = 1
@@ -95,7 +94,7 @@ proc runServer*(): void {.thread.} =
 
   echo "Listenting for connections..."
 
-  while not stopServer:
+  while true:
     server.tick()
     for connection in server.newConnections:
       echo "[new] ", connection.address
@@ -154,8 +153,7 @@ proc runServer*(): void {.thread.} =
       elif msg.startsWith("LEAVE GAME"):
         resetGame()
         if user.isOwner:
-          stopServer = true
-          break
+          return
         else:
           dec games[0].playerCount
       elif msg.startsWith("START GAME"):
