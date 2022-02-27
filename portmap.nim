@@ -15,6 +15,8 @@ proc mapPort*(): bool =
   discard u.discover()
   let n = u.selectIGD()
   if n != IGDFound: return false
+  # Some devices do not support upnp, so it would fail here
+  # when trying to get the external ip address.
   # let res = u.externalIPAddress()
   # if not res.isOk: return false
   # let externalIPAddress = res.value

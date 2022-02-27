@@ -1,7 +1,8 @@
 # nim c -d:danger --mm:orc -d:useMalloc --passC:-ffast-math server.nim
 
-import netty
 import std/[strutils, sequtils, strformat]
+
+import netty
 import stew/[assign2]
 
 include portmap
@@ -95,7 +96,7 @@ proc initServer*(): void =
   var portMapped = mapPort()
   if not portMapped:
     # Can't forward port, server probably won't work :(
-      discard
+    discard
 
   server.assign(newReactor("0.0.0.0", 27886))
 
@@ -133,9 +134,8 @@ proc runServer*(): void {.thread.} =
 
             game.users[playerNumber].assign(kailleraUser)
 
-
           for i in 0..<4:
-            sendMsg(connection, "PING")
+            connection.sendMsg("PING")
 
         for connection in server.deadConnections:
           echo "[dead] ", connection.address
@@ -187,4 +187,5 @@ proc runServer*(): void {.thread.} =
       discard removePort()
 
 when isMainModule:
+  initServer()
   runServer()

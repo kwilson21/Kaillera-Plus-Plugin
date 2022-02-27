@@ -1,12 +1,15 @@
 # C:\Users\kazon\Downloads\32b\nim-1.6.2\bin\nim c -d:danger -d:noSignalHandler --noMain:on -l:-static --app:lib --mm:arc --threads:on --tlsEmulation:off --passC:-ffast-math -d:useMalloc kailleraclient.nim
 # C:\Users\kazon\Downloads\32b\nim-1.6.2\bin\nim c -d:danger -d:noSignalHandler --noMain:on -l:-static --app:lib --mm:arc --threads:on --tlsEmulation:off --passC:-ffast-math -d:useMalloc -o:plugin.dll kailleraclient.nim
 
-import winim/lean
 import std/[times, os, strutils, strformat, sugar, browsers, httpclient]
+import asyncdispatch
+import asynchttpserver
+
+import winim/lean
+import ws
 import netty
 import stew/[assign2]
 # import nimx/[window, layout, button, text_field]
-import asyncdispatch, asynchttpserver, ws
 # import nimview
 
 from server import runServer, initServer
@@ -54,20 +57,17 @@ var
   romNameMsg: Channel[string]
 
   inputArray: seq[char]
-
-  lastPosFrameRecv: int
-  lastPosFrameSend: int
-
   frameCount: int
   connectionType: int = 1 # 1 ~= LAN
   frameDelay: int
   myPlayerNumber: int
   totalPlayers: int
+  loggedIn: bool = false
   startedGame: bool = false
 
-  mainHWND: HWND
-
   kInfo: ptr kailleraInfos
+
+  mainHWND: HWND
 
   stage: int = 0
   gameCount: int
@@ -79,12 +79,7 @@ var
   sizeOfEinput: int = 0
   inputFrame: int
 
-  loggedIn: bool = false
-
   authState: AuthState = AuthState.notAuth
-
-  authID: string
-
 
 proc NimMain() {.importc, cdecl.}
 
@@ -101,62 +96,59 @@ proc callGameCallback(args: tuple[romNameChannel: ptr Channel[string],
     discard kInfo.gameCallback(romName, args.playerNumber.cint,
         args.totalPlayers.cint)
 
-proc recvLoop(
+proc runClient(
   args: tuple[clientMsg: ptr Channel[string],
   outputChannel: ptr Channel[string],
   serverAddress: string
   ]): void =
-  # {.cast(gcsafe).}:
-    var
-      client: Reactor
-      c2s: Connection
+  var
+    client: Reactor
+    c2s: Connection
 
-    client.assign(newReactor()) # create connection
-    c2s.assign(client.connect(args.serverAddress, PORT)) # connect to server
-    client.punchThrough(args.serverAddress, PORT)
+  client.assign(newReactor()) # create connection
+  c2s.assign(client.connect(args.serverAddress, PORT)) # connect to server
+  client.punchThrough(args.serverAddress, PORT)
 
-    client.send(c2s, "PING" & "END")
+  client.send(c2s, "PING" & "END")
 
-    # main loop
-    while true:
-      # must call tick to both read and write
-      client.tick()
+  while true:
+    client.tick()
 
-      var (gotMsg, cMsg) = args.clientMsg[].tryRecv
-      if gotMsg:
-        client.send(c2s, cMsg & "END")
-        if cMsg == "DROP":
-          client.disconnect(c2s)
-          return
+    var (gotMsg, cMsg) = args.clientMsg[].tryRecv
+    if gotMsg:
+      client.send(c2s, cMsg & "END")
+      if cMsg == "DROP":
+        client.disconnect(c2s)
+        return
 
-      for recv in client.messages:
-        let msg = recv.data[0..^4]
+    for recv in client.messages:
+      let msg = recv.data[0..^4]
 
-        if msg.startsWith("FRAME DELAY"):
-          frameDelay.assign(parseInt($msg[^1]))
-        elif msg.startsWith("PONG"):
-          if not loggedIn:
-            loggedIn.assign(true)
-        elif msg.startsWith("PING"):
-          client.send(c2s, "PONG" & "END")
-        elif msg.startsWith("PLAYER NUMBER"):
-          myPlayerNumber.assign(parseInt($msg[^1]))
-        elif msg.startsWith("START GAME"):
-          if startedGame:
-            continue
-          stage.assign(0)
-          sizeOfEInput.assign(0)
-          startedGame.assign(true)
-          gameThread.createThread(callGameCallback, (
-              romNameChannel: addr romNameMsg, playerNumber: myPlayerNumber,
-                  totalPlayers: totalPlayers))
-        elif msg.startsWith("ALL READY"):
-          gamePlaying.assign(true)
-        elif msg.startsWith("TOTAL PLAYERS"):
-          totalPlayers.assign(parseInt($msg[^1]))
-        elif msg.startsWith("INPUT"):
-          args.outputChannel[].send(msg[5..^1])
-          frameCount += connectionType
+      if msg.startsWith("FRAME DELAY"):
+        frameDelay.assign(parseInt($msg[^1]))
+      elif msg.startsWith("PONG"):
+        if not loggedIn:
+          loggedIn.assign(true)
+      elif msg.startsWith("PING"):
+        client.send(c2s, "PONG" & "END")
+      elif msg.startsWith("PLAYER NUMBER"):
+        myPlayerNumber.assign(parseInt($msg[^1]))
+      elif msg.startsWith("START GAME"):
+        if startedGame:
+          continue
+        stage.assign(0)
+        sizeOfEInput.assign(0)
+        startedGame.assign(true)
+        gameThread.createThread(callGameCallback, (
+            romNameChannel: addr romNameMsg, playerNumber: myPlayerNumber,
+                totalPlayers: totalPlayers))
+      elif msg.startsWith("ALL READY"):
+        gamePlaying.assign(true)
+      elif msg.startsWith("TOTAL PLAYERS"):
+        totalPlayers.assign(parseInt($msg[^1]))
+      elif msg.startsWith("INPUT"):
+        args.outputChannel[].send(msg[5..^1])
+        frameCount += connectionType
 
 proc gameInit(): void =
   var
@@ -169,8 +161,6 @@ proc gameInit(): void =
   frameSend.assign(0)
 
   returnInputSize.assign(false)
-  lastPosFrameRecv.assign(0)
-  lastPosFrameSend.assign(0)
   gamePlaying.assign(false)
   sizeOfEinput.assign(inputSize * totalPlayers)
   inputFrame.assign((frameDelay + 1) * connectionType - 1)
@@ -206,11 +196,10 @@ proc gameInit(): void =
     sleep(1)
 
 proc clientKeepAlive(clientMsg: ptr Channel[string]): void =
-  # {.cast(gcsafe).}:
-    while true:
-      if not gamePlaying and loggedIn:
-        clientMsg[].send("KEEP ALIVE")
-      sleep(8000)
+  while true:
+    if not gamePlaying and loggedIn:
+      clientMsg[].send("KEEP ALIVE")
+    sleep(8000)
 
 proc getWanIP(): string =
   let client = newHttpClient()
@@ -232,6 +221,7 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
       userID: string
       webSocket: WebSocket
       authUrl: string
+      authID: string
 
     try:
       webSocket = await newWebSocket(fmt"ws://{WS_HOST}/ws/auth")
@@ -284,7 +274,7 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
 
           initServer()
           serverThread.createThread(runServer)
-          clientThread.createThread(recvLoop, (clientMsg.addr,
+          clientThread.createThread(runClient, (clientMsg.addr,
               outputChannel.addr, HOST))
           clientKaThread.createThread(clientKeepAlive, clientMsg.addr)
         elif msg.startsWith("LEAVE GAME"):
@@ -293,12 +283,12 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
         elif msg.startsWith("DROP"):
           stopGame()
           if kInfo.clientDroppedCallback != nil:
-            kInfo.clientDroppedCallback(cstring("User"), myPlayerNumber.cint)
+            kInfo.clientDroppedCallback("User".cstring, myPlayerNumber.cint)
         elif msg.startsWith("START GAME"):
           clientMsgChannel[].send("START GAME")
         elif msg.startsWith("JOIN GAME"):
           let serverIP = msg[9..^1]
-          clientThread.createThread(recvLoop, (clientMsg.addr,
+          clientThread.createThread(runClient, (clientMsg.addr,
               outputChannel.addr, serverIP))
           clientKaThread.createThread(clientKeepAlive, clientMsg.addr)
         elif msg.startsWith("GAME LIST"):
@@ -407,7 +397,11 @@ proc kailleraModifyPlayValues(values: pointer, size: cint): cint {.dllexp,
     gameInit()
 
   inputArray.assign(collect(for i in 0..<size: cast[cstring](values)[i]))
-  clientMsg.send(fmt"INPUT{join(inputArray)}")
+
+  inc frameSend
+  if frameSend == connectionType:
+    clientMsg.send(fmt"INPUT{join(inputArray)}")
+    frameSend.assign(0)
 
   inc frameRecv
   if frameRecv == inputFrame:
