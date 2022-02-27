@@ -4,6 +4,8 @@ import netty
 import std/[strutils, sequtils, strformat]
 import stew/[assign2]
 
+include portmap
+
 type
   KailleraUser = object
     isOwner: bool
@@ -24,160 +26,165 @@ type
     spectators: seq[ref KailleraUser]
     controllerData: array[4, string]
 
-proc runServer*(): void {.thread.} =
+var
+  server: Reactor
+  game: ref KailleraGame = nil
+  isPlaying: bool = false
+  controllerDataPacket: string
+  pCount: int = 0
 
-  var
-    server = newReactor("0.0.0.0", 27886)
-    games = newSeq[ref KailleraGame]()
-    isPlaying: bool = false
-    controllerDataPacket: string
-    pCount: int = 0
+let
+  connectionType: int = 1
 
-  let
-    connectionType: int = 1
+proc sendMsg(connection: Connection, msg: string): void =
+  # echo fmt"[sent]{msg}"
+  server.send(connection, msg & "END")
 
-  proc sendMsg(connection: Connection, msg: string): void =
-    # echo fmt"[sent]{msg}"
-    server.send(connection, msg & "END")
+proc broadcastMsg(msg: string): void =
+  for i in 0..<game.playerCount:
+    game.users[i].connection.sendMsg(msg)
 
-  proc broadcastMsg(msg: string): void =
-    for i in 0..<games[0].playerCount:
-      games[0].users[i].connection.sendMsg(msg)
+proc findPlayer(users: array[0..3, ref KailleraUser],
+    userConnection: Connection): ref KailleraUser =
+  for i in 0..<users.len:
+    if users[i].connection == userConnection:
+      return users[i]
 
-  proc findPlayer(users: array[0..3, ref KailleraUser],
-      userConnection: Connection): ref KailleraUser =
-    for i in 0..<users.len:
-      if users[i].connection == userConnection:
-        return users[i]
+proc synced(): bool =
+  return (isPlaying and game != nil and all(game.controllerData[
+        0..<game.playerCount], proc(x: string): bool = x != ""))
 
-  proc synced(): bool =
-    return (isPlaying and games.len > 0 and all(games[0].controllerData[
-          0..<games[0].playerCount], proc(x: string): bool = x != ""))
+proc sendSyncedInput(): void =
+  if synced():
+    controllerDataPacket.assign(join(game.controllerData))
+    # echo fmt"Sending data {controllerDataPacket=} {game.controllerData=}"
+    broadcastMsg("INPUT" & controllerDataPacket)
+    game.controllerData.assign(@["", "", "", ""])
 
-  proc sendSyncedInput(): void =
-    if synced():
-      controllerDataPacket.assign(join(games[0].controllerData))
-      # echo fmt"Sending data {controllerDataPacket=} {games[0].controllerData=}"
-      broadcastMsg("INPUT" & controllerDataPacket)
-      games[0].controllerData.assign(@["", "", "", ""])
+proc resetGame(): void =
+  if isPlaying:
+    isPlaying = false
+  game.controllerData.assign(@["", "", "", ""])
 
-  proc resetGame(): void =
-    if isPlaying:
-      isPlaying = false
-    games[0].controllerData.assign(@["", "", "", ""])
-
-  proc startGame(): void =
-    # if games.len > 0 and games[0].playerCount == 2 and not isPlaying and pCount ==
-    #     (4 * games[0].playerCount):
+proc startGame(): void =
+  if game != nil and game.playerCount > 0 and not isPlaying and pCount ==
+      (4 * game.playerCount):
     echo "Starting game..."
 
-    for i in 0..<games[0].playerCount:
-      let user = games[0].users[i]
+    for i in 0..<game.playerCount:
+      let user = game.users[i]
 
       let ans = ((60 / connectionType) * (user.ping/1000)) + 1
 
       user.delay = int(ans)
 
-      games[0].delay = max(games[0].delay, user.delay)
+      game.delay = max(game.delay, user.delay)
 
-      user.tempDelay = games[0].delay - user.delay
+      user.tempDelay = game.delay - user.delay
 
-      user.totalDelay = games[0].delay + user.tempDelay + 5
+      user.totalDelay = game.delay + user.tempDelay + 5
 
       user.connection.sendMsg(fmt"PLAYER NUMBER: {user.playerNumber + 1}")
       user.connection.sendMsg(fmt"FRAME DELAY: {user.delay}")
-      user.connection.sendMsg(fmt"TOTAL PLAYERS: {games[0].playerCount}")
+      user.connection.sendMsg(fmt"TOTAL PLAYERS: {game.playerCount}")
 
     broadcastMsg("START GAME")
     isPlaying = true
 
+proc initServer*(): void =
+  var portMapped = mapPort()
+  if not portMapped:
+    # Can't forward port, server probably won't work :(
+      discard
 
+  server.assign(newReactor("0.0.0.0", 27886))
+
+proc runServer*(): void {.thread.} =
   echo "Listenting for connections..."
+  {.cast(gcsafe).}:
+    try:
+      while true:
+        server.tick()
+        for connection in server.newConnections:
+          echo "[new] ", connection.address
 
-  while true:
-    server.tick()
-    for connection in server.newConnections:
-      echo "[new] ", connection.address
+          var kailleraUser = new(KailleraUser)
+          kailleraUser.connection = connection
+          kailleraUser.frameCount = 0
 
-      var kailleraUser = new(KailleraUser)
-      kailleraUser.connection = connection
-      kailleraUser.frameCount = 0
+          if game == nil:
+            kailleraUser.isOwner = true
+            kailleraUser.playerNumber.assign(0)
 
-      if games.len == 0:
-        kailleraUser.isOwner = true
-        kailleraUser.playerNumber.assign(0)
+            var kailleraGame = new(KailleraGame)
+            kailleraGame.id = 1
+            kailleraGame.users[0] = kailleraUser
+            kailleraGame.playerCount = 1
+            kailleraGame.delay = 1
 
-        var playerArray: array[4, ref KailleraUser]
+            game.assign(kailleraGame)
+          elif game != nil and game.playerCount < 4:
+            kailleraUser.isOwner = false
+            inc game.playerCount
 
-        playerArray[0].assign(kailleraUser)
+            let playerNumber = game.playerCount - 1
 
-        var kailleraGame = new(KailleraGame)
-        kailleraGame.id = 1
-        kailleraGame.users = playerArray
-        kailleraGame.playerCount = 1
-        kailleraGame.delay = 1
+            kailleraUser.playerNumber.assign(playerNumber)
 
-        games.add(kailleraGame)
-      elif games.len > 0 and games[0].playerCount < 4:
-        kailleraUser.isOwner = false
-        inc games[0].playerCount
+            game.users[playerNumber].assign(kailleraUser)
 
-        let playerNumber = games[0].playerCount - 1
 
-        kailleraUser.playerNumber.assign(playerNumber)
+          for i in 0..<4:
+            sendMsg(connection, "PING")
 
-        games[0].users[playerNumber].assign(kailleraUser)
+        for connection in server.deadConnections:
+          echo "[dead] ", connection.address
+          if isPlaying:
+            isPlaying = false
+          if game != nil:
+            game = nil
 
-      for i in 0..<4:
-        sendMsg(connection, "PING")
+        for recv in server.messages:
+          let msg = recv.data[0..^4]
 
-    for connection in server.deadConnections:
-      echo "[dead] ", connection.address
-      if isPlaying:
-        isPlaying = false
-      if games.len > 0:
-        discard games.pop()
+          let user = findPlayer(game.users, recv.conn)
 
-    for recv in server.messages:
-      let msg = recv.data[0..^4]
+          # echo fmt"[msg]{msg}"
+          if msg.startsWith("PING"):
+            echo "Received ping"
+            user.connection.sendMsg("PONG")
+          elif msg.startsWith("PONG"):
+            user.ping = (user.connection.stats.latencyTs.avg()*1000).int
+            inc pCount
+          elif msg.startsWith("LEAVE GAME"):
+            resetGame()
+            if user.isOwner:
+              return
+            else:
+              dec game.playerCount
+          elif msg.startsWith("START GAME"):
+            if user.isOwner:
+              startGame()
+          elif msg.startsWith("READY TO PLAY"):
+            broadcastMsg("ALL READY")
+          elif msg.startsWith("INPUT"):
+            if user.frameCount < user.totalDelay:
+              user.lostInput.add(msg[5..^1])
 
-      let user = findPlayer(games[0].users, recv.conn)
+              broadcastMsg(msg)
 
-      # echo fmt"[msg]{msg}"
-      if msg.startsWith("PING"):
-        echo "Received ping"
-        user.connection.sendMsg("PONG")
-      elif msg.startsWith("PONG"):
-        user.ping = (user.connection.stats.latencyTs.avg()*1000).int
-        inc pCount
-      elif msg.startsWith("LEAVE GAME"):
-        resetGame()
-        if user.isOwner:
-          return
-        else:
-          dec games[0].playerCount
-      elif msg.startsWith("START GAME"):
-        if user.isOwner:
-          startGame()
-      elif msg.startsWith("READY TO PLAY"):
-        broadcastMsg("ALL READY")
-      elif msg.startsWith("INPUT"):
-        if user.frameCount < user.totalDelay:
-          user.lostInput.add(msg[5..^1])
+              inc user.frameCount
+            else:
+              if user.lostInput.len > 0:
+                game.controllerData[user.playerNumber].assign(user.lostInput[0])
+                user.lostInput.delete(0)
+              else:
+                game.controllerData[user.playerNumber].assign(msg[5..^1])
 
-          broadcastMsg(msg)
+            sendSyncedInput()
 
-          inc user.frameCount
-        else:
-          if user.lostInput.len > 0:
-            games[0].controllerData[user.playerNumber].assign(user.lostInput[0])
-            user.lostInput.delete(0)
-          else:
-            games[0].controllerData[user.playerNumber].assign(msg[5..^1])
-
-        sendSyncedInput()
-
-    # startGame()
+    finally:
+      discard removePort()
 
 when isMainModule:
   runServer()

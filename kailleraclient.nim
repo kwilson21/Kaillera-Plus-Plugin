@@ -1,14 +1,16 @@
-# C:\Users\kazon\Downloads\32b\nim-1.6.2\bin\nim c -d:danger -d:noSignalHandler --noMain:off -l:-static --app:lib --mm:arc --threads:on --tlsEmulation:off --passC:-ffast-math -d:useMalloc kailleraclient.nim
-# C:\Users\kazon\Downloads\32b\nim-1.6.2\bin\nim c -d:danger -d:noSignalHandler --noMain:off -l:-static --app:lib --mm:arc --threads:on --tlsEmulation:off --passC:-ffast-math -d:useMalloc -o:plugin.dll kailleraclient.nim
+# C:\Users\kazon\Downloads\32b\nim-1.6.2\bin\nim c -d:danger -d:noSignalHandler --noMain:on -l:-static --app:lib --mm:arc --threads:on --tlsEmulation:off --passC:-ffast-math -d:useMalloc kailleraclient.nim
+# C:\Users\kazon\Downloads\32b\nim-1.6.2\bin\nim c -d:danger -d:noSignalHandler --noMain:on -l:-static --app:lib --mm:arc --threads:on --tlsEmulation:off --passC:-ffast-math -d:useMalloc -o:plugin.dll kailleraclient.nim
 
 import winim/lean
 import std/[times, os, strutils, strformat, sugar, browsers, httpclient]
 import netty
 import stew/[assign2]
-import nimx/[window, layout, button, text_field]
+# import nimx/[window, layout, button, text_field]
 import asyncdispatch, asynchttpserver, ws
+# import nimview
 
-import server
+from server import runServer, initServer
+
 
 when appType == "lib":
   {.pragma: dllexp, stdcall, exportc, dynlib.}
@@ -28,28 +30,28 @@ type
     notAuth, authSuccess, authFailed
 
 const
-  WS_HOST = "localhost:5000"
+  WS_HOST = "192.168.1.102:5000"
   HOST = "localhost"
-  # HOST = "192.168.1.102"
   PORT = 27886
   MAX_INCOMING_BUFFER = 15
   MAX_PLAYERS = 4
 
 
 var
-  webSocket: WebSocket
-
   clientThread: Thread[tuple[clientMsg: ptr Channel[string],
       outputChannel: ptr Channel[string],
-      host: string]]
+      serverAddress: string]]
   clientKaThread: Thread[ptr Channel[string]]
-  gameThread: Thread[tuple[game: cstring, playerNumber, totalPlayers: int]]
-  webSocketThread: Thread[void]
+  gameThread: Thread[tuple[romNameChannel: ptr Channel[string], playerNumber,
+      totalPlayers: int]]
+  webSocketThread: Thread[tuple[webSocketChannel: ptr Channel[string],
+      clientMsgChannel: ptr Channel[string], romNameChannel: ptr Channel[string]]]
   serverThread: Thread[void]
 
-  webSocketMsgChannel: Channel[string]
+  webSocketMsg: Channel[string]
   clientMsg: Channel[string]
   outputChannel: Channel[string]
+  romNameMsg: Channel[string]
 
   inputArray: seq[char]
 
@@ -84,11 +86,6 @@ var
   authID: string
 
 
-let
-  # currentGame: cstring = "SmashRemix1.0.1"
-  # currentGame: cstring = "Super Smash Bros. (U) [!]"
-  currentGame: cstring = "SmashRemix0.9.4"
-
 proc NimMain() {.importc, cdecl.}
 
 proc c_strcpy(a: cstring, b: cstring): cstring {.importc: "strcpy",
@@ -97,16 +94,17 @@ proc c_strcpy(a: cstring, b: cstring): cstring {.importc: "strcpy",
 proc getTickCount(): int =
   return epochTime().int
 
-proc callGameCallback(args: tuple[game: cstring, playerNumber,
-    totalPlayers: int]): void {.thread.} =
+proc callGameCallback(args: tuple[romNameChannel: ptr Channel[string],
+    playerNumber, totalPlayers: int]): void {.thread.} =
   {.cast(gcsafe).}:
-    discard kInfo.gameCallback(args.game, args.playerNumber.cint,
+    var romName: cstring = args.romNameChannel[].recv
+    discard kInfo.gameCallback(romName, args.playerNumber.cint,
         args.totalPlayers.cint)
 
 proc recvLoop(
   args: tuple[clientMsg: ptr Channel[string],
   outputChannel: ptr Channel[string],
-  host: string
+  serverAddress: string
   ]): void =
   # {.cast(gcsafe).}:
     var
@@ -114,8 +112,8 @@ proc recvLoop(
       c2s: Connection
 
     client.assign(newReactor()) # create connection
-    c2s.assign(client.connect(args.host, PORT)) # connect to server
-    client.punchThrough(args.host, PORT)
+    c2s.assign(client.connect(args.serverAddress, PORT)) # connect to server
+    client.punchThrough(args.serverAddress, PORT)
 
     client.send(c2s, "PING" & "END")
 
@@ -124,7 +122,7 @@ proc recvLoop(
       # must call tick to both read and write
       client.tick()
 
-      let (gotMsg, cMsg) = args.clientMsg[].tryRecv
+      var (gotMsg, cMsg) = args.clientMsg[].tryRecv
       if gotMsg:
         client.send(c2s, cMsg & "END")
         if cMsg == "DROP":
@@ -149,8 +147,9 @@ proc recvLoop(
           stage.assign(0)
           sizeOfEInput.assign(0)
           startedGame.assign(true)
-          gameThread.createThread(callGameCallback, (game: currentGame,
-              playerNumber: myPlayerNumber, totalPlayers: totalPlayers))
+          gameThread.createThread(callGameCallback, (
+              romNameChannel: addr romNameMsg, playerNumber: myPlayerNumber,
+                  totalPlayers: totalPlayers))
         elif msg.startsWith("ALL READY"):
           gamePlaying.assign(true)
         elif msg.startsWith("TOTAL PLAYERS"):
@@ -194,8 +193,6 @@ proc gameInit(): void =
       sizeOfEinput.assign(-1)
     if gameCount == 0 or sizeOfEInput == -1:
       MessageBox(0, "Never received ready signal. Game Ended!", "gameInit()", 0)
-      # MessageDialog(frame, "Never received ready signal. Game Ended!",
-      #     "gameInit()").showModal()
       sizeOfEinput.assign(-1)
       return
     if getTickCount() - i >= 1:
@@ -217,8 +214,8 @@ proc clientKeepAlive(clientMsg: ptr Channel[string]): void =
 
 proc getWanIP(): string =
   let client = newHttpClient()
-  var res = client.getContent("http://api.ipify.org/")
-  return res.strip()
+  var url = client.getContent("http://api.ipify.org/")
+  return url.strip()
 
 proc stopGame(): void =
   if startedGame:
@@ -228,12 +225,16 @@ proc stopGame(): void =
     sleep(20)
 
 proc startWebsock(webSocketMsgChannel: ptr Channel[string],
-    clientMsgChannel: ptr Channel[string]) {.async.} =
+    clientMsgChannel: ptr Channel[string],
+    romNameChannel: ptr Channel[string]) {.async.} =
   {.cast(gcsafe).}:
-    var userID: string
+    var
+      userID: string
+      webSocket: WebSocket
+      authUrl: string
 
     try:
-      var webSocket = await newWebSocket(fmt"ws://{WS_HOST}/ws/auth")
+      webSocket = await newWebSocket(fmt"ws://{WS_HOST}/ws/auth")
       await webSocket.send("START AUTH")
       while webSocket.readyState == Open:
         let msg = await webSocket.receiveStrPacket()
@@ -246,16 +247,19 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
             return
 
         if msg.startsWith("AUTH URL"):
-          let authUrl = msg[8..^1]
+          authUrl.assign(msg[8..^1])
           openDefaultBrowser(authUrl)
         elif msg.startsWith("AUTH ID"):
-          authID = msg[7..^1]
+          authID.assign(msg[7..^1])
           MessageBox(0, authID, "Auth ID", 0)
+          # callJs("setAuthID",authID)
         elif msg.startsWith("USER ID"):
           userID = msg[7..^1]
         elif msg.startsWith("AUTH SUCCESS"):
           authState = AuthState.authSuccess
+          # callJS("setAuthState","success")
           webSocket.close()
+          break
     except:
       authState = AuthState.authFailed
       let eMsg = getCurrentExceptionMsg()
@@ -274,8 +278,11 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
             webSocket.close()
 
         if msg.startsWith("CREATE GAME"):
-          let host = getWanIP()
-          await webSocket.send(fmt"SERVER IP{host}")
+          romNameChannel[].send(msg[11..^1])
+          let wanIP = getWanIP()
+          await webSocket.send(fmt"SERVER IP{wanIP}")
+
+          initServer()
           serverThread.createThread(runServer)
           clientThread.createThread(recvLoop, (clientMsg.addr,
               outputChannel.addr, HOST))
@@ -290,57 +297,69 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
         elif msg.startsWith("START GAME"):
           clientMsgChannel[].send("START GAME")
         elif msg.startsWith("JOIN GAME"):
-          let host = msg[9..^1]
+          let serverIP = msg[9..^1]
           clientThread.createThread(recvLoop, (clientMsg.addr,
-              outputChannel.addr, host))
+              outputChannel.addr, serverIP))
           clientKaThread.createThread(clientKeepAlive, clientMsg.addr)
         elif msg.startsWith("GAME LIST"):
-          await webSocket.send(fmt"GAME LIST{kInfo.gameList}")
+          await webSocket.send(fmt"GAME LIST{kInfo[].gameList}")
+        elif msg.startsWith("ROM NAME"):
+          romNameChannel[].send(msg[8..^1])
     except:
+      stopGame()
       let eMsg = getCurrentExceptionMsg()
       MessageBox(0, eMsg, "Exception", 0)
       return
 
-proc runWebSocket(): void {.thread.} =
-  waitFor startWebsock(addr webSocketMsgChannel, addr clientMsg)
+proc runWebSocket(args: tuple[webSocketChannel: ptr Channel[string],
+    clientMsgChannel: ptr Channel[string], romNameChannel: ptr Channel[
+    string]]): void {.thread.} =
+  waitFor startWebsock(args.webSocketChannel, args.clientMsgChannel,
+      args.romNameChannel)
 
-proc createFrame(): void =
-  let mainWindow = newWindow(newRect(50, 50, 300, 150))
-  mainWindow.makeLayout: # DSL follows
-    - Label as labelText: # Add a view of type Label to the window. Create a local reference to it named greetingLabel.
-      center == super # center point of the label should be equal to center point of superview
-      width == 100 # width should be 300 points
-      height == 5 # well, this should be obvious now
-      text: "Click to login" # property "text" should be set to whatever the label should display
-    - Button as disconnectButton: # Add a view of type Button. We're not referring to it so it's anonymous.
-      centerX == super # center horizontally
-      top == prev.bottom + 5 # the button should be lower than the label by 5 points
-      width == 100
-      height == 25
-      title: "Logout"
-      enabled: false
-      onAction:
-        webSocketMsgChannel.send("LOGOUT")
-        connectButton.enable
-        disconnectButton.disable
-        labelText.text = "Click to login"
-    - Button as connectButton: # Add a view of type Button. We're not referring to it so it's anonymous.
-      centerX == super # center horizontally
-      top == prev.bottom + 5 # the button should be lower than the label by 5 points
-      width == 100
-      height == 25
-      title: "Login"
-      onAction:
-        webSocketThread.createThread(runWebSocket)
-        while authState != AuthState.authSuccess:
-          sleep(5)
-        if authState != AuthState.authFailed:
-          connectButton.disable
-          disconnectButton.enable
-          labelText.text = "Success!"
-        else:
-          authState = AuthState.notAuth
-          labelText.text = "Click to login"
+# proc createFrame(): void =
+#   let mainWindow = newWindow(newRect(50, 50, 300, 150))
+#   mainWindow.makeLayout: # DSL follows
+#     - Label as labelText: # Add a view of type Label to the window. Create a local reference to it named greetingLabel.
+#       center == super # center point of the label should be equal to center point of superview
+#       width == 100 # width should be 300 points
+#       height == 5 # well, this should be obvious now
+#       text: "Click to login" # property "text" should be set to whatever the label should display
+#     - Button as disconnectButton: # Add a view of type Button. We're not referring to it so it's anonymous.
+#       centerX == super # center horizontally
+#       top == prev.bottom + 5 # the button should be lower than the label by 5 points
+#       width == 100
+#       height == 25
+#       title: "Logout"
+#       enabled: false
+#       onAction:
+#         webSocketMsg.send("LOGOUT")
+#         connectButton.enable
+#         disconnectButton.disable
+#         labelText.text = "Click to login"
+#     - Button as connectButton: # Add a view of type Button. We're not referring to it so it's anonymous.
+#       centerX == super # center horizontally
+#       top == prev.bottom + 5 # the button should be lower than the label by 5 points
+#       width == 100
+#       height == 25
+#       title: "Login"
+#       onAction:
+#         webSocketThread.createThread(runWebSocket)
+#         while authState != AuthState.authSuccess:
+#           sleep(5)
+#         if authState != AuthState.authFailed:
+#           connectButton.disable
+#           disconnectButton.enable
+#           labelText.text = "Success!"
+#         else:
+#           authState = AuthState.notAuth
+#           labelText.text = "Click to login"
+
+# proc onButtonClick() =
+#   if authState == AuthState.notAuth:
+#     webSocketThread.createThread(runWebSocket)
+#     webSocketMsg.send("START AUTH")
+
 
 proc kailleraGetVersion(version: cstring): void {.dllexp,
     extern: "_kailleraGetVersion".} =
@@ -365,9 +384,13 @@ proc kailleraSelectServerDialog(parent: HWND): void {.dllexp,
 
   clientMsg.open
   outputChannel.open(maxItems = connectionType * MAX_INCOMING_BUFFER)
+  romNameMsg.open
+  webSocketMsg.open
 
-  runApplication:
-    createFrame()
+  # nimview.add("onButtonClick", onButtonClick)
+  webSocketThread.createThread(runWebSocket, (addr webSocketMsg, addr clientMsg,
+      addr romNameMsg))
+  # nimview.start(resizable=false, title="Kaillera+ v0.1.0", width=400, height=265)
 
 proc kailleraModifyPlayValues(values: pointer, size: cint): cint {.dllexp,
     extern: "_kailleraModifyPlayValues".} =
@@ -402,8 +425,6 @@ proc kailleraModifyPlayValues(values: pointer, size: cint): cint {.dllexp,
         sizeOfEinput.assign(-1)
         MessageBox(0, "Game Ended!  Didn't receive a response for 15s.",
             "Game Ended!", 0)
-        # MessageDialog(frame, "Game Ended!  Didn't receive a response for 15s.",
-        #     "Game Ended!").showModal()
         return sizeOfEInput.cint
 
       sleep(1)
@@ -411,7 +432,7 @@ proc kailleraModifyPlayValues(values: pointer, size: cint): cint {.dllexp,
     returnInputSize.assign(true)
 
   if returnInputSize:
-    let output = outputChannel.recv
+    var output = outputChannel.recv
     for i in 0..<sizeOfEInput:
       cast[ptr UncheckedArray[char]](values)[i].assign(output[i])
 
@@ -425,5 +446,4 @@ proc kailleraChatSend(text: cstring): void {.dllexp,
   discard
 
 proc kailleraEndGame(): void {.dllexp, extern: "_kailleraEndGame".} =
-  webSocketMsgChannel.send("DROP")
-
+  webSocketMsg.send("DROP")

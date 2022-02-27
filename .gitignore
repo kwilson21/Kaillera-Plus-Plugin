@@ -3,3 +3,7 @@ nimcache/
 *.h
 *.c
 *.exe
+node_modules
+.env
+miniupnp/libminiupnpc.a
+miniupnpc.lib
