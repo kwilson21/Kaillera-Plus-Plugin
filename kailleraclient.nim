@@ -92,8 +92,8 @@ proc getTickCount(): int =
 proc callGameCallback(args: tuple[romNameChannel: ptr Channel[string],
     playerNumber, totalPlayers: int]): void {.thread.} =
   {.cast(gcsafe).}:
-    var romName: cstring = args.romNameChannel[].recv
-    discard kInfo.gameCallback(romName, args.playerNumber.cint,
+    var romName: string = args.romNameChannel[].recv
+    discard kInfo.gameCallback(romName.cstring, args.playerNumber.cint,
         args.totalPlayers.cint)
 
 proc runClient(
