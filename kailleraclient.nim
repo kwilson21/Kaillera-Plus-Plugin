@@ -9,8 +9,8 @@ import winim/lean
 import ws
 import netty
 import stew/[assign2]
-# import nimx/[window, layout, button, text_field]
-# import nimview
+import ui
+import clipboard
 
 from server import runServer, initServer
 
@@ -42,6 +42,24 @@ const
 
 
 var
+  # GUI
+  mainwin: Window
+  wsHostEntry: Entry
+  connectButton: Button
+  disconnectButton: Button
+  clipboardButton: Button
+  confirmationCodeValueLabel: Label
+  serverURLLabel: Label
+  confirmationCodeLabel: Label
+  connectedLabel: Label
+  box: Box
+  group: ui.Group
+  inner: Box
+
+  wsHost: string = "purple-haze-8917.fly.dev"
+
+  # Threads
+
   clientThread: Thread[tuple[clientMsgChannel: ptr Channel[string],
       outputChannel: ptr Channel[string],
       serverAddress: string]]
@@ -51,6 +69,8 @@ var
   webSocketThread: Thread[tuple[webSocketChannel: ptr Channel[string],
       clientMsgChannel: ptr Channel[string], romNameChannel: ptr Channel[string]]]
   serverThread: Thread[void]
+
+  # Thread channels
 
   webSocketMsg: Channel[string]
   clientMsg: Channel[string]
@@ -80,7 +100,12 @@ var
   sizeOfEinput: int = 0
   inputFrame: int
 
+  startAuth: bool = false
   authState: AuthState = AuthState.notAuth
+  authID: string
+
+  p = clipboardWithName(CboardGeneral)
+
 
 proc NimMain() {.importc, cdecl.}
 
@@ -183,7 +208,8 @@ proc gameInit(): void =
     if GetAsyncKeyState(27) == -32767:
       sizeOfEinput.assign(-1)
     if gameCount == 0 or sizeOfEInput == -1:
-      MessageBox(0, "Never received ready signal. Game Ended!", "gameInit()", 0)
+      msgBoxError(mainwin, "gameInit()", "Never received ready signal. Game Ended!")
+      # MessageBox(0, "Never received ready signal. Game Ended!", "gameInit()", 0)
       sizeOfEinput.assign(-1)
       return
     if getTickCount() - i >= 1:
@@ -214,6 +240,33 @@ proc stopGame(): void =
     gamePlaying = false
     sleep(20)
 
+proc onConnected() =
+  group.title = "Logout"
+
+  serverURLLabel.hide
+  wsHostEntry.hide
+  connectButton.hide
+  confirmationCodeLabel.hide
+  confirmationCodeValueLabel.hide
+  clipboardButton.hide
+
+  connectedLabel.show
+  disconnectButton.show
+
+proc onDisconnected() =
+  group.title = "Login"
+
+  connectedLabel.hide
+  disconnectButton.hide
+
+  serverURLLabel.show
+  wsHostEntry.show
+  connectButton.enable
+  connectButton.show
+  confirmationCodeLabel.show
+  confirmationCodeValueLabel.show
+  clipboardButton.show
+
 proc startWebsock(webSocketMsgChannel: ptr Channel[string],
     clientMsgChannel: ptr Channel[string],
     romNameChannel: ptr Channel[string]) {.async.} =
@@ -222,11 +275,14 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
       userID: string
       webSocket: WebSocket
       authUrl: string
-      authID: string
+
+    while not startAuth:
+      sleep(1)
 
     try:
-      webSocket = await newWebSocket(fmt"ws://{WS_HOST}/ws/auth")
+      webSocket = await newWebSocket(fmt"ws://{wsHost}/ws/auth")
       await webSocket.send("START AUTH")
+      connectButton.disable
       while webSocket.readyState == Open:
         let msg = await webSocket.receiveStrPacket()
 
@@ -234,6 +290,7 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
         if gotMsg:
           await webSocket.send(wMsg)
           if wMsg == "LOGOUT":
+            disconnectButton.hide
             webSocket.close()
             return
 
@@ -242,23 +299,24 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
           openDefaultBrowser(authUrl)
         elif msg.startsWith("AUTH ID"):
           authID.assign(msg[7..^1])
-          MessageBox(0, authID, "Auth ID", 0)
-          # callJs("setAuthID",authID)
+          confirmationCodeValueLabel.text = authID
         elif msg.startsWith("USER ID"):
           userID = msg[7..^1]
         elif msg.startsWith("AUTH SUCCESS"):
           authState = AuthState.authSuccess
-          # callJS("setAuthState","success")
+          onConnected()
           webSocket.close()
+          startAuth = false
           break
     except:
       authState = AuthState.authFailed
       let eMsg = getCurrentExceptionMsg()
-      MessageBox(0, eMsg, "Exception", 0)
+      msgBoxError(mainwin, "Exception", eMsg)
+      # MessageBox(0, eMsg, "Exception", 0)
       return
 
     try:
-      webSocket = await newWebSocket(fmt"ws://{WS_HOST}/ws/{userID}")
+      webSocket = await newWebSocket(fmt"ws://{wsHost}/ws/{userID}")
       while webSocket.readyState == Open:
         let msg = await webSocket.receiveStrPacket()
 
@@ -267,6 +325,10 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
           await webSocket.send(wMsg)
           if wMsg == "LOGOUT":
             webSocket.close()
+            stopGame()
+            onDisconnected()
+            authID = ""
+            return
 
         if msg.startsWith("CREATE GAME"):
           romNameChannel[].send(msg[11..^1])
@@ -301,7 +363,8 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
     except:
       stopGame()
       let eMsg = getCurrentExceptionMsg()
-      MessageBox(0, eMsg, "Exception", 0)
+      msgBoxError(mainwin, "Exception", eMsg)
+      # MessageBox(0, eMsg, "Exception", 0)
       return
 
 proc runWebSocket(args: tuple[webSocketChannel: ptr Channel[string],
@@ -309,49 +372,6 @@ proc runWebSocket(args: tuple[webSocketChannel: ptr Channel[string],
     string]]): void {.thread.} =
   waitFor startWebsock(args.webSocketChannel, args.clientMsgChannel,
       args.romNameChannel)
-
-# proc createFrame(): void =
-#   let mainWindow = newWindow(newRect(50, 50, 300, 150))
-#   mainWindow.makeLayout: # DSL follows
-#     - Label as labelText: # Add a view of type Label to the window. Create a local reference to it named greetingLabel.
-#       center == super # center point of the label should be equal to center point of superview
-#       width == 100 # width should be 300 points
-#       height == 5 # well, this should be obvious now
-#       text: "Click to login" # property "text" should be set to whatever the label should display
-#     - Button as disconnectButton: # Add a view of type Button. We're not referring to it so it's anonymous.
-#       centerX == super # center horizontally
-#       top == prev.bottom + 5 # the button should be lower than the label by 5 points
-#       width == 100
-#       height == 25
-#       title: "Logout"
-#       enabled: false
-#       onAction:
-#         webSocketMsg.send("LOGOUT")
-#         connectButton.enable
-#         disconnectButton.disable
-#         labelText.text = "Click to login"
-#     - Button as connectButton: # Add a view of type Button. We're not referring to it so it's anonymous.
-#       centerX == super # center horizontally
-#       top == prev.bottom + 5 # the button should be lower than the label by 5 points
-#       width == 100
-#       height == 25
-#       title: "Login"
-#       onAction:
-#         webSocketThread.createThread(runWebSocket)
-#         while authState != AuthState.authSuccess:
-#           sleep(5)
-#         if authState != AuthState.authFailed:
-#           connectButton.disable
-#           disconnectButton.enable
-#           labelText.text = "Success!"
-#         else:
-#           authState = AuthState.notAuth
-#           labelText.text = "Click to login"
-
-# proc onButtonClick() =
-#   if authState == AuthState.notAuth:
-#     webSocketThread.createThread(runWebSocket)
-#     webSocketMsg.send("START AUTH")
 
 
 proc kailleraGetVersion(version: cstring): void {.dllexp,
@@ -371,6 +391,44 @@ proc kailleraSetInfos(infos: ptr kailleraInfos): void {.dllexp,
     extern: "_kailleraSetInfos".} =
   kInfo.assign(infos)
 
+proc createFrame*() =
+  mainwin = newWindow("Kaillera+", 640, 480, false)
+  mainwin.margined = true
+  mainwin.onClosing = (proc (): bool = return true)
+
+  box = newVerticalBox(true)
+  mainwin.setChild(box)
+
+  group = newGroup("Login", true)
+  box.add(group, false)
+
+  inner = newVerticalBox(true)
+  group.child = inner
+
+  serverURLLabel = newLabel("Server URL")
+  inner.add serverURLLabel
+  wsHostEntry = newEntry(wsHost, proc() = wsHost = wsHostEntry.text)
+  inner.add wsHostEntry
+  connectButton = newButton("Connect", proc() = startAuth = true)
+  inner.add connectButton
+
+  confirmationCodeLabel = newLabel("Confirmation Code")
+  inner.add confirmationCodeLabel
+  confirmationCodeValueLabel = newLabel(authID)
+  inner.add confirmationCodeValueLabel
+  clipboardButton = newButton("Copy to clipboard", proc() = p.writeString(authID))
+  inner.add clipboardButton
+
+  connectedLabel = newLabel("Connected")
+  inner.add connectedLabel
+  disconnectButton = newButton("Disconnect", proc() = webSocketMsg.send("LOGOUT"))
+  inner.add disconnectButton
+
+  onDisconnected()
+
+  show(mainwin)
+  mainLoop()
+
 proc kailleraSelectServerDialog(parent: HWND): void {.dllexp,
     extern: "_kailleraSelectServerDialog".} =
   mainHWND.assign(parent)
@@ -380,10 +438,11 @@ proc kailleraSelectServerDialog(parent: HWND): void {.dllexp,
   romNameMsg.open
   webSocketMsg.open
 
-  # nimview.add("onButtonClick", onButtonClick)
   webSocketThread.createThread(runWebSocket, (addr webSocketMsg, addr clientMsg,
       addr romNameMsg))
-  # nimview.start(resizable=false, title="Kaillera+ v0.1.0", width=400, height=265)
+
+  init()
+  createFrame()
 
 proc kailleraModifyPlayValues(values: pointer, size: cint): cint {.dllexp,
     extern: "_kailleraModifyPlayValues".} =
@@ -420,8 +479,9 @@ proc kailleraModifyPlayValues(values: pointer, size: cint): cint {.dllexp,
         clientMsg.send("KEEP ALIVE")
       elif w == 15 and returnInputSize:
         sizeOfEinput.assign(-1)
-        MessageBox(0, "Game Ended!  Didn't receive a response for 15s.",
-            "Game Ended!", 0)
+        msgBoxError(mainwin, "Game Ended!", "Game Ended!  Didn't receive a response for 15s.")
+        # MessageBox(0, "Game Ended!  Didn't receive a response for 15s.",
+        #     "Game Ended!", 0)
         return sizeOfEInput.cint
 
       sleep(1)
