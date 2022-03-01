@@ -1,5 +1,5 @@
-# C:\Users\kazon\Downloads\32b\nim-1.6.2\bin\nim c -d:danger -d:noSignalHandler --noMain:on -l:-static --app:lib --mm:arc --threads:on --tlsEmulation:off --passC:-ffast-math -d:useMalloc kailleraclient.nim
-# C:\Users\kazon\Downloads\32b\nim-1.6.2\bin\nim c -d:danger -d:noSignalHandler --noMain:on -l:-static --app:lib --mm:arc --threads:on --tlsEmulation:off --passC:-ffast-math -d:useMalloc -o:plugin.dll kailleraclient.nim
+# C:\Users\kazon\Downloads\32b\nim-1.6.2\bin\nim c -d:danger --debuginfo:off --d:noMain --noMain:on -l:-static --app:lib --mm:arc --threads:on --tlsEmulation:off --passc:-fpic -d:useLibUiDll kailleraclient.nim
+# C:\Users\kazon\Downloads\32b\nim-1.6.2\bin\nim c -d:danger --debuginfo:off --d:noMain --noMain:on -l:-static --app:lib --mm:arc --threads:on --tlsEmulation:off --passc:-fpic -d:useLibUiDll -o:plugin.dll kailleraclient.nim
 
 import std/[times, os, strutils, strformat, sugar, browsers, httpclient]
 import asyncdispatch
@@ -104,7 +104,7 @@ var
   authState: AuthState = AuthState.notAuth
   authID: string
 
-  p = clipboardWithName(CboardGeneral)
+  p: Clipboard
 
 
 proc NimMain() {.importc, cdecl.}
@@ -258,14 +258,14 @@ proc onDisconnected() =
 
   connectedLabel.hide
   disconnectButton.hide
+  confirmationCodeLabel.hide
+  confirmationCodeValueLabel.hide
+  clipboardButton.hide
 
   serverURLLabel.show
   wsHostEntry.show
   connectButton.enable
   connectButton.show
-  confirmationCodeLabel.show
-  confirmationCodeValueLabel.show
-  clipboardButton.show
 
 proc startWebsock(webSocketMsgChannel: ptr Channel[string],
     clientMsgChannel: ptr Channel[string],
@@ -283,7 +283,7 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
       webSocket = await newWebSocket(fmt"ws://{wsHost}/ws/auth")
       await webSocket.send("START AUTH")
       connectButton.disable
-      while webSocket.readyState == Open:
+      while webSocket.readyState == ws.ReadyState.Open:
         let msg = await webSocket.receiveStrPacket()
 
         let (gotMsg, wMsg) = webSocketMsgChannel[].tryRecv
@@ -299,7 +299,12 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
           openDefaultBrowser(authUrl)
         elif msg.startsWith("AUTH ID"):
           authID.assign(msg[7..^1])
+
           confirmationCodeValueLabel.text = authID
+
+          confirmationCodeLabel.show
+          confirmationCodeValueLabel.show
+          clipboardButton.show
         elif msg.startsWith("USER ID"):
           userID = msg[7..^1]
         elif msg.startsWith("AUTH SUCCESS"):
@@ -317,7 +322,7 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
 
     try:
       webSocket = await newWebSocket(fmt"ws://{wsHost}/ws/{userID}")
-      while webSocket.readyState == Open:
+      while webSocket.readyState == ws.ReadyState.Open:
         let msg = await webSocket.receiveStrPacket()
 
         let (gotMsg, wMsg) = webSocketMsgChannel[].tryRecv
@@ -393,7 +398,9 @@ proc kailleraSetInfos(infos: ptr kailleraInfos): void {.dllexp,
   kInfo.assign(infos)
 
 proc createFrame*() =
-  mainwin = newWindow("Kaillera+", 640, 480, false)
+  p = clipboardWithName(CboardGeneral)
+
+  mainwin = newWindow("Kaillera+", 380, 280, false)
   mainwin.margined = true
   mainwin.onClosing = (proc (): bool = return true)
 
