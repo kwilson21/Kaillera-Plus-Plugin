@@ -60,12 +60,12 @@ proc sendSyncedInput(): void =
     controllerDataPacket.assign(join(game.controllerData))
     # echo fmt"Sending data {controllerDataPacket=} {game.controllerData=}"
     broadcastMsg("INPUT" & controllerDataPacket)
-    game.controllerData.assign(@["", "", "", ""])
+    game.controllerData.reset
 
 proc resetGame(): void =
   if isPlaying:
     isPlaying = false
-  game.controllerData.assign(@["", "", "", ""])
+  game.controllerData.reset
 
 proc startGame(): void =
   if game != nil and game.playerCount > 0 and not isPlaying and pCount ==
@@ -156,6 +156,8 @@ proc runServer*(): void {.thread.} =
           elif msg.startsWith("PONG"):
             user.ping = (user.connection.stats.latencyTs.avg()*1000).int
             inc pCount
+          elif msg.startsWith("DROP GAME"):
+            resetGame()
           elif msg.startsWith("LEAVE GAME"):
             resetGame()
             if user.isOwner:

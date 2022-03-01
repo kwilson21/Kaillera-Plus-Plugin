@@ -33,7 +33,8 @@ type
     notAuth, authSuccess, authFailed
 
 const
-  WS_HOST = "192.168.1.102:5000"
+  # WS_HOST = "192.168.1.102:5000"
+  WS_HOST = "purple-haze-8917.fly.dev"
   HOST = "localhost"
   PORT = 27886
   MAX_INCOMING_BUFFER = 15
@@ -41,7 +42,7 @@ const
 
 
 var
-  clientThread: Thread[tuple[clientMsg: ptr Channel[string],
+  clientThread: Thread[tuple[clientMsgChannel: ptr Channel[string],
       outputChannel: ptr Channel[string],
       serverAddress: string]]
   clientKaThread: Thread[ptr Channel[string]]
@@ -97,7 +98,7 @@ proc callGameCallback(args: tuple[romNameChannel: ptr Channel[string],
         args.totalPlayers.cint)
 
 proc runClient(
-  args: tuple[clientMsg: ptr Channel[string],
+  args: tuple[clientMsgChannel: ptr Channel[string],
   outputChannel: ptr Channel[string],
   serverAddress: string
   ]): void =
@@ -114,7 +115,7 @@ proc runClient(
   while true:
     client.tick()
 
-    var (gotMsg, cMsg) = args.clientMsg[].tryRecv
+    var (gotMsg, cMsg) = args.clientMsgChannel[].tryRecv
     if gotMsg:
       client.send(c2s, cMsg & "END")
       if cMsg == "DROP":
@@ -280,10 +281,12 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
         elif msg.startsWith("LEAVE GAME"):
           stopGame()
           clientMsgChannel[].send("LEAVE GAME")
-        elif msg.startsWith("DROP"):
+        elif msg.startsWith("DROP GAME"):
+          let nick = msg[9..^1]
           stopGame()
           if kInfo.clientDroppedCallback != nil:
-            kInfo.clientDroppedCallback("User".cstring, myPlayerNumber.cint)
+            kInfo.clientDroppedCallback(nick.cstring, myPlayerNumber.cint)
+          clientMsgChannel[].send("DROP GAME")
         elif msg.startsWith("START GAME"):
           clientMsgChannel[].send("START GAME")
         elif msg.startsWith("JOIN GAME"):
