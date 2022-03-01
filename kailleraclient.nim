@@ -397,7 +397,7 @@ proc kailleraSetInfos(infos: ptr kailleraInfos): void {.dllexp,
     extern: "_kailleraSetInfos".} =
   kInfo.assign(infos)
 
-proc createFrame*() =
+proc createFrame() =
   p = clipboardWithName(CboardGeneral)
 
   mainwin = newWindow("Kaillera+", 380, 280, false)
