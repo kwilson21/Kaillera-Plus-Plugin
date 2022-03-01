@@ -386,6 +386,7 @@ proc kailleraInit(): void {.dllexp, extern: "_kailleraInit".} =
 
 proc kailleraShutdown(): void {.dllexp, extern: "_kailleraShutdown".} =
   DestroyWindow(mainHWND)
+  mainwin.destroy
 
 proc kailleraSetInfos(infos: ptr kailleraInfos): void {.dllexp,
     extern: "_kailleraSetInfos".} =
