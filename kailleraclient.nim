@@ -1,6 +1,3 @@
-# C:\Users\kazon\Downloads\32b\nim-1.6.2\bin\nim c -d:danger --debuginfo:off --d:noMain --noMain:on -l:-static --app:lib --mm:arc --threads:on --tlsEmulation:off --passc:-fpic -d:useLibUiDll kailleraclient.nim
-# C:\Users\kazon\Downloads\32b\nim-1.6.2\bin\nim c -d:danger --debuginfo:off --d:noMain --noMain:on -l:-static --app:lib --mm:arc --threads:on --tlsEmulation:off --passc:-fpic -d:useLibUiDll -o:plugin.dll kailleraclient.nim
-
 import std/[times, os, strutils, strformat, sugar, browsers, httpclient]
 import asyncdispatch
 import asynchttpserver
@@ -16,7 +13,7 @@ from server import runServer, initServer
 
 
 when appType == "lib":
-  {.pragma: dllexp, stdcall, exportc, dynlib.}
+  {.pragma: dllexp, cdecl, stdcall, exportc, dynlib.}
 else:
   {.pragma: dllexp, importc.}
 
@@ -55,8 +52,9 @@ var
   box: Box
   group: ui.Group
   inner: Box
+  mainHWND: HWND
 
-  wsHost: string = "purple-haze-8917.fly.dev"
+  wsHost: string = WS_HOST
 
   # Threads
 
@@ -88,8 +86,6 @@ var
 
   kInfo: ptr kailleraInfos
 
-  mainHWND: HWND
-
   stage: int = 0
   gameCount: int
   frameRecv: int
@@ -107,7 +103,7 @@ var
   p: Clipboard
 
 
-proc NimMain() {.importc, cdecl.}
+proc NimMain() {.importc, nodecl.}
 
 proc c_strcpy(a: cstring, b: cstring): cstring {.importc: "strcpy",
     header: "<string.h>", noSideEffect.}
@@ -115,18 +111,24 @@ proc c_strcpy(a: cstring, b: cstring): cstring {.importc: "strcpy",
 proc getTickCount(): int =
   return epochTime().int
 
-proc callGameCallback(args: tuple[romNameChannel: ptr Channel[string],
-    playerNumber, totalPlayers: int]): void {.thread.} =
+proc callGameCallback(
+  args: tuple[
+    romNameChannel: ptr Channel[string],
+    playerNumber, totalPlayers: int
+    ]
+  ): void {.thread.} =
   {.cast(gcsafe).}:
     var romName: string = args.romNameChannel[].recv
     discard kInfo.gameCallback(romName.cstring, args.playerNumber.cint,
         args.totalPlayers.cint)
 
 proc runClient(
-  args: tuple[clientMsgChannel: ptr Channel[string],
-  outputChannel: ptr Channel[string],
-  serverAddress: string
-  ]): void =
+  args: tuple[
+    clientMsgChannel: ptr Channel[string],
+    outputChannel: ptr Channel[string],
+    serverAddress: string
+    ]
+  ): void =
   var
     client: Reactor
     c2s: Connection
@@ -329,10 +331,10 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
         if gotMsg:
           await webSocket.send(wMsg)
           if wMsg == "LOGOUT":
-            webSocket.close()
             stopGame()
             onDisconnected()
             authID = ""
+            webSocket.close()
             return
 
         if msg.startsWith("CREATE GAME"):
@@ -378,25 +380,6 @@ proc runWebSocket(args: tuple[webSocketChannel: ptr Channel[string],
   waitFor startWebsock(args.webSocketChannel, args.clientMsgChannel,
       args.romNameChannel)
 
-
-proc kailleraGetVersion(version: cstring): void {.dllexp,
-    extern: "_kailleraGetVersion".} =
-
-  let kVersion: cstring = "SSB64 Online v1"
-
-  discard c_strcpy(version, kVersion)
-
-proc kailleraInit(): void {.dllexp, extern: "_kailleraInit".} =
-  NimMain()
-
-proc kailleraShutdown(): void {.dllexp, extern: "_kailleraShutdown".} =
-  DestroyWindow(mainHWND)
-  mainwin.destroy
-
-proc kailleraSetInfos(infos: ptr kailleraInfos): void {.dllexp,
-    extern: "_kailleraSetInfos".} =
-  kInfo.assign(infos)
-
 proc createFrame() =
   p = clipboardWithName(CboardGeneral)
 
@@ -437,8 +420,24 @@ proc createFrame() =
   show(mainwin)
   mainLoop()
 
-proc kailleraSelectServerDialog(parent: HWND): void {.dllexp,
-    extern: "_kailleraSelectServerDialog".} =
+proc kailleraGetVersion(version: cstring): void {.dllexp, .} =
+
+  let kVersion: cstring = "SSB64 Online v1"
+
+  discard c_strcpy(version, kVersion)
+
+proc kailleraInit(): void {.dllexp.} =
+  NimMain()
+  init()
+
+proc kailleraShutdown(): void {.dllexp.} =
+  DestroyWindow(mainHWND)
+  mainwin.destroy
+
+proc kailleraSetInfos(infos: ptr kailleraInfos): void {.dllexp.} =
+  kInfo.assign(infos)
+
+proc kailleraSelectServerDialog(parent: HWND): void {.dllexp.} =
   mainHWND.assign(parent)
 
   clientMsg.open
@@ -449,11 +448,9 @@ proc kailleraSelectServerDialog(parent: HWND): void {.dllexp,
   webSocketThread.createThread(runWebSocket, (addr webSocketMsg, addr clientMsg,
       addr romNameMsg))
 
-  init()
   createFrame()
 
-proc kailleraModifyPlayValues(values: pointer, size: cint): cint {.dllexp,
-    extern: "_kailleraModifyPlayValues".} =
+proc kailleraModifyPlayValues(values: pointer, size: cint): cint {.dllexp.} =
 
   var
     i: int
@@ -506,9 +503,8 @@ proc kailleraModifyPlayValues(values: pointer, size: cint): cint {.dllexp,
   return 0.cint
 
 
-proc kailleraChatSend(text: cstring): void {.dllexp,
-    extern: "_kailleraChatSend".} =
+proc kailleraChatSend(text: cstring): void {.dllexp.} =
   discard
 
-proc kailleraEndGame(): void {.dllexp, extern: "_kailleraEndGame".} =
+proc kailleraEndGame(): void {.dllexp.} =
   webSocketMsg.send("DROP")

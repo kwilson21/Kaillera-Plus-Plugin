@@ -5,7 +5,7 @@ import std/[strutils, sequtils, strformat]
 import netty
 import stew/[assign2]
 
-include portmap
+# include portmap
 
 type
   KailleraUser = object
@@ -93,10 +93,10 @@ proc startGame(): void =
     isPlaying = true
 
 proc initServer*(): void =
-  var portMapped = mapPort()
-  if not portMapped:
-    # Can't forward port, server probably won't work :(
-    discard
+  # var portMapped = mapPort()
+  # if not portMapped:
+  #   # Can't forward port, server probably won't work :(
+  #   discard
 
   server.assign(newReactor("0.0.0.0", 27886))
 
@@ -186,7 +186,8 @@ proc runServer*(): void {.thread.} =
             sendSyncedInput()
 
     finally:
-      discard removePort()
+      # discard removePort()
+      discard
 
 when isMainModule:
   initServer()
