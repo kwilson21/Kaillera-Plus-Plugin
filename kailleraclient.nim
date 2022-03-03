@@ -380,6 +380,7 @@ proc startAuthWebsock(webSocketMsgChannel: ptr Channel[string],
           openDefaultBrowser(authUrl)
         elif msg.startsWith("AUTH ID"):
           authID.assign(msg[7..^1])
+          p.writeString(authID)
 
           confirmationCodeValueLabel.text = authID
 
