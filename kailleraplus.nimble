@@ -13,7 +13,7 @@ bin           = @["kailleraclient"]
 requires "nim >= 1.6.2","winim","ws","netty","stew","ui","clipboard"
 
 proc compile() =
-  exec "nim c --cc:vcc -d:danger --d:noMain --noMain:on --app:lib --mm:arc --threads:on --tlsEmulation:off -f -o:plugin.dll kailleraclient.nim"
+  exec "nim c --cc:vcc --panics:on -d:danger --d:noMain --noMain:on --app:lib --mm:arc --threads:on --tlsEmulation:off -f kailleraclient.nim"
 
 task build_dll, "Compile to dll":
   compile()
