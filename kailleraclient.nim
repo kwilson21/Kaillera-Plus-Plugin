@@ -22,14 +22,11 @@ else:
 
 type
   kailleraInfos = object
-    appName, gameList: ptr UncheckedArray[char]
+    appName, gameList: cstring
     gameCallback: proc(game: cstring, player, numplayers: cint): cint {.stdcall, gcsafe.}
     chatReceivedCallback: proc(nick, text: cstring) {.stdcall.}
     clientDroppedCallback: proc(nick: cstring, playernb: cint) {.stdcall.}
     moreInfosCallback: proc(gamename: cstring) {.stdcall.}
-
-  AuthState = enum
-    notAuth, authSuccess, authFailed
 
 const
   # WSHOST = "192.168.1.102:5000"
@@ -66,8 +63,11 @@ var
   clientKaThread: Thread[ptr Channel[string]]
   gameThread: Thread[tuple[romNameChannel: ptr Channel[string], playerNumber,
       totalPlayers: int]]
-  webSocketThread: Thread[tuple[webSocketChannel: ptr Channel[string],
+  authWebSocketThread: Thread[tuple[webSocketChannel: ptr Channel[string],
       clientMsgChannel: ptr Channel[string], romNameChannel: ptr Channel[string]]]
+  webSocketClientThread: Thread[tuple[webSocketChannel: ptr Channel[string],
+      clientMsgChannel: ptr Channel[string], romNameChannel: ptr Channel[
+          string], userID: string]]
   serverThread: Thread[void]
 
   # Thread channels
@@ -100,8 +100,6 @@ var
 
   gameList: seq[string]
 
-  startAuth: bool = false
-  authState: AuthState = AuthState.notAuth
   authID: string
 
   p: Clipboard
@@ -273,61 +271,13 @@ proc onDisconnected() =
   connectButton.enable
   connectButton.show
 
-proc startWebsock(webSocketMsgChannel: ptr Channel[string],
+proc startClientWebsock(webSocketMsgChannel: ptr Channel[string],
     clientMsgChannel: ptr Channel[string],
-    romNameChannel: ptr Channel[string]) {.async.} =
+    romNameChannel: ptr Channel[string],
+    userID: string) {.async.} =
   {.cast(gcsafe).}:
-    var
-      userID: string
-      webSocket: WebSocket
-      authUrl: string
-
-    while not startAuth:
-      sleep(1)
-
     try:
-      webSocket = await newWebSocket(fmt"ws://{wsHost}/ws/auth")
-      await webSocket.send("START AUTH")
-      connectButton.disable
-      while webSocket.readyState == ws.ReadyState.Open:
-        let msg = await webSocket.receiveStrPacket()
-
-        let (gotMsg, wMsg) = webSocketMsgChannel[].tryRecv
-        if gotMsg:
-          await webSocket.send(wMsg)
-          if wMsg == "LOGOUT":
-            disconnectButton.hide
-            webSocket.close()
-            return
-
-        if msg.startsWith("AUTH URL"):
-          authUrl.assign(msg[8..^1])
-          openDefaultBrowser(authUrl)
-        elif msg.startsWith("AUTH ID"):
-          authID.assign(msg[7..^1])
-
-          confirmationCodeValueLabel.text = authID
-
-          confirmationCodeLabel.show
-          confirmationCodeValueLabel.show
-          clipboardButton.show
-        elif msg.startsWith("USER ID"):
-          userID = msg[7..^1]
-        elif msg.startsWith("AUTH SUCCESS"):
-          authState = AuthState.authSuccess
-          onConnected()
-          webSocket.close()
-          startAuth = false
-          break
-    except:
-      authState = AuthState.authFailed
-      let eMsg = getCurrentExceptionMsg()
-      msgBoxError(mainwin, "Exception", eMsg)
-      onDisconnected()
-      return
-
-    try:
-      webSocket = await newWebSocket(fmt"ws://{wsHost}/ws/{userID}")
+      let webSocket = await newWebSocket(fmt"ws://{wsHost}/ws/{userID}")
       while webSocket.readyState == ws.ReadyState.Open:
         let msg = await webSocket.receiveStrPacket()
 
@@ -336,8 +286,8 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
           await webSocket.send(wMsg)
           if wMsg == "LOGOUT":
             stopGame()
-            onDisconnected()
             authID = ""
+            onDisconnected()
             webSocket.close()
             return
 
@@ -368,23 +318,23 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
               outputChannel.addr, serverIP))
           clientKaThread.createThread(clientKeepAlive, clientMsg.addr)
         elif msg.startsWith("GAME LIST"):
-          var
-            temp: seq[char]
-            strSize: int
-            w: int = 0
+          # var
+          #   temp: seq[char]
+          #   strSize: int
+          #   w: int = 0
 
-          for i in 0..<65536:
-            strSize = len(cast[ptr UncheckedArray[char]](cast[int](
-                kInfo.gameList) + w))
-            if strSize == 0:
-              break
-            temp.assign(collect(for j in w..strSize: kInfo.gameList[j]))
-            if temp.len <= 1: continue
-            gameList.add(temp.join.strip)
-            w = w + strSize + 1
+          # for i in 0..<65536:
+          #   strSize = len(cast[ptr UncheckedArray[char]](cast[int](
+          #       kInfo.gameList) + w))
+          #   if strSize == 0:
+          #     break
+          #   temp.assign(collect(for j in w..strSize: kInfo.gameList[j]))
+          #   if temp.len <= 1: continue
+          #   gameList.add(temp.join.strip)
+          #   w = w + strSize + 1
 
-          let gameStr = gameList.join(",")
-          await webSocket.send(fmt"GAME LIST{gameStr}")
+          # let gameStr = gameList.join(",")
+          await webSocket.send(fmt"GAME LIST{kInfo.gameList}")
         elif msg.startsWith("ROM NAME"):
           romNameChannel[].send(msg[8..^1])
     except:
@@ -394,11 +344,70 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
       onDisconnected()
       return
 
-proc runWebSocket(args: tuple[webSocketChannel: ptr Channel[string],
+proc runClientWebSocket(args: tuple[webSocketChannel: ptr Channel[string],
+    clientMsgChannel: ptr Channel[string], romNameChannel: ptr Channel[
+    string], userID: string]): void {.thread.} =
+  waitFor startClientWebsock(args.webSocketChannel, args.clientMsgChannel,
+      args.romNameChannel, args.userID)
+
+proc startAuthWebsock(webSocketMsgChannel: ptr Channel[string],
+    clientMsgChannel: ptr Channel[string],
+    romNameChannel: ptr Channel[string]) {.async.} =
+  {.cast(gcsafe).}:
+    var
+      authUrl: string
+      userID: string
+
+    try:
+      let webSocket = await newWebSocket(fmt"ws://{wsHost}/ws/auth")
+      await webSocket.send("START AUTH")
+      connectButton.disable
+      while webSocket.readyState == ws.ReadyState.Open:
+        let msg = await webSocket.receiveStrPacket()
+
+        let (gotMsg, wMsg) = webSocketMsgChannel[].tryRecv
+        if gotMsg:
+          await webSocket.send(wMsg)
+          if wMsg == "LOGOUT":
+            disconnectButton.hide
+            webSocket.close()
+            return
+
+        if msg.startsWith("AUTH URL"):
+          authUrl.assign(msg[8..^1])
+          openDefaultBrowser(authUrl)
+        elif msg.startsWith("AUTH ID"):
+          authID.assign(msg[7..^1])
+
+          confirmationCodeValueLabel.text = authID
+
+          confirmationCodeLabel.show
+          confirmationCodeValueLabel.show
+          clipboardButton.show
+        elif msg.startsWith("USER ID"):
+          userID = msg[7..^1]
+        elif msg.startsWith("AUTH SUCCESS"):
+          onConnected()
+          webSocket.close()
+          webSocketClientThread.createThread(runClientWebSocket, (
+            addr webSocketMsg, addr clientMsg,
+            addr romNameMsg, userID))
+          return
+    except:
+      let eMsg = getCurrentExceptionMsg()
+      msgBoxError(mainwin, "Exception", eMsg)
+      onDisconnected()
+      return
+
+
+
+proc runAuthWebSocket(args: tuple[webSocketChannel: ptr Channel[string],
     clientMsgChannel: ptr Channel[string], romNameChannel: ptr Channel[
     string]]): void {.thread.} =
-  waitFor startWebsock(args.webSocketChannel, args.clientMsgChannel,
+  waitFor startAuthWebsock(args.webSocketChannel, args.clientMsgChannel,
       args.romNameChannel)
+
+
 
 proc createFrame() =
   p = clipboardWithName(CboardGeneral)
@@ -420,7 +429,9 @@ proc createFrame() =
   inner.add serverURLLabel
   wsHostEntry = newEntry(wsHost, proc() = wsHost = wsHostEntry.text)
   inner.add wsHostEntry
-  connectButton = newButton("Connect", proc() = startAuth = true)
+  connectButton = newButton("Connect", proc(
+      ) = authWebSocketThread.createThread(runAuthWebSocket, (addr webSocketMsg,
+          addr clientMsg, addr romNameMsg)))
   inner.add connectButton
 
   confirmationCodeLabel = newLabel("Confirmation Code")
@@ -464,9 +475,6 @@ proc kailleraSelectServerDialog(parent: HWND): void {.dllexp.} =
   outputChannel.open(maxItems = connectionType * MAX_INCOMING_BUFFER)
   romNameMsg.open
   webSocketMsg.open
-
-  webSocketThread.createThread(runWebSocket, (addr webSocketMsg, addr clientMsg,
-      addr romNameMsg))
 
   createFrame()
 
