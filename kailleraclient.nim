@@ -20,7 +20,7 @@ else:
 
 type
   kailleraInfos = object
-    appName, gameList: cstring
+    appName, gameList: ptr UncheckedArray[char]
     gameCallback: proc(game: cstring, player, numplayers: cint): cint {.stdcall, gcsafe.}
     chatReceivedCallback: proc(nick, text: cstring) {.stdcall.}
     clientDroppedCallback: proc(nick: cstring, playernb: cint) {.stdcall.}
@@ -30,8 +30,8 @@ type
     notAuth, authSuccess, authFailed
 
 const
-  # WS_HOST = "192.168.1.102:5000"
-  WS_HOST = "purple-haze-8917.fly.dev"
+  # WSHOST = "192.168.1.102:5000"
+  WSHOST = "purple-haze-8917.fly.dev"
   HOST = "localhost"
   PORT = 27886
   MAX_INCOMING_BUFFER = 15
@@ -54,7 +54,7 @@ var
   inner: Box
   mainHWND: HWND
 
-  wsHost: string = WS_HOST
+  wsHost: string = WSHOST
 
   # Threads
 
@@ -84,7 +84,7 @@ var
   loggedIn: bool = false
   startedGame: bool = false
 
-  kInfo: ptr kailleraInfos
+  kInfo: kailleraInfos
 
   stage: int = 0
   gameCount: int
@@ -95,6 +95,8 @@ var
   inputSize: int
   sizeOfEinput: int = 0
   inputFrame: int
+
+  gameList: seq[string]
 
   startAuth: bool = false
   authState: AuthState = AuthState.notAuth
@@ -128,7 +130,7 @@ proc runClient(
     outputChannel: ptr Channel[string],
     serverAddress: string
     ]
-  ): void =
+  ): void {.thread.} =
   var
     client: Reactor
     c2s: Connection
@@ -319,7 +321,7 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
       authState = AuthState.authFailed
       let eMsg = getCurrentExceptionMsg()
       msgBoxError(mainwin, "Exception", eMsg)
-      # MessageBox(0, eMsg, "Exception", 0)
+      onDisconnected()
       return
 
     try:
@@ -352,10 +354,10 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
           clientMsgChannel[].send("LEAVE GAME")
         elif msg.startsWith("DROP GAME"):
           let nick = msg[9..^1]
+          clientMsgChannel[].send(fmt"DROP GAME{nick}")
           stopGame()
           if kInfo.clientDroppedCallback != nil:
             kInfo.clientDroppedCallback(nick.cstring, myPlayerNumber.cint)
-          clientMsgChannel[].send("DROP GAME")
         elif msg.startsWith("START GAME"):
           clientMsgChannel[].send("START GAME")
         elif msg.startsWith("JOIN GAME"):
@@ -364,14 +366,30 @@ proc startWebsock(webSocketMsgChannel: ptr Channel[string],
               outputChannel.addr, serverIP))
           clientKaThread.createThread(clientKeepAlive, clientMsg.addr)
         elif msg.startsWith("GAME LIST"):
-          await webSocket.send(fmt"GAME LIST{kInfo[].gameList}")
+          var
+            temp: seq[char]
+            strSize: int
+            w: int = 0
+
+          for i in 0..<65536:
+            strSize = len(cast[ptr UncheckedArray[char]](cast[int](
+                kInfo.gameList) + w))
+            if strSize == 0:
+              break
+            temp.assign(collect(for j in w..strSize: kInfo.gameList[j]))
+            if temp.len <= 1: continue
+            gameList.add(temp.join.strip)
+            w = w + strSize + 1
+
+          let gameStr = gameList.join(",")
+          await webSocket.send(fmt"GAME LIST{gameStr}")
         elif msg.startsWith("ROM NAME"):
           romNameChannel[].send(msg[8..^1])
     except:
       stopGame()
       let eMsg = getCurrentExceptionMsg()
       msgBoxError(mainwin, "Exception", eMsg)
-      # MessageBox(0, eMsg, "Exception", 0)
+      onDisconnected()
       return
 
 proc runWebSocket(args: tuple[webSocketChannel: ptr Channel[string],
@@ -435,7 +453,7 @@ proc kailleraShutdown(): void {.dllexp.} =
   mainwin.destroy
 
 proc kailleraSetInfos(infos: ptr kailleraInfos): void {.dllexp.} =
-  kInfo.assign(infos)
+  kInfo.assign(infos[])
 
 proc kailleraSelectServerDialog(parent: HWND): void {.dllexp.} =
   mainHWND.assign(parent)
@@ -507,4 +525,5 @@ proc kailleraChatSend(text: cstring): void {.dllexp.} =
   discard
 
 proc kailleraEndGame(): void {.dllexp.} =
-  webSocketMsg.send("DROP")
+  clientMsg.send(fmt"DROP GAMEP1")
+  stopGame()
