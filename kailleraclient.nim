@@ -65,7 +65,7 @@ var
       totalPlayers: int]]
   authWebSocketThread: Thread[tuple[webSocketChannel: ptr Channel[string],
       clientMsgChannel: ptr Channel[string], romNameChannel: ptr Channel[string]]]
-  webSocketClientThread: Thread[tuple[webSocketChannel: ptr Channel[string],
+  webSocketFEThread: Thread[tuple[webSocketChannel: ptr Channel[string],
       clientMsgChannel: ptr Channel[string], romNameChannel: ptr Channel[
           string], userID: string]]
   serverThread: Thread[void]
@@ -271,7 +271,7 @@ proc onDisconnected() =
   connectButton.enable
   connectButton.show
 
-proc startClientWebsock(webSocketMsgChannel: ptr Channel[string],
+proc startFEWebsock(webSocketMsgChannel: ptr Channel[string],
     clientMsgChannel: ptr Channel[string],
     romNameChannel: ptr Channel[string],
     userID: string) {.async.} =
@@ -304,9 +304,10 @@ proc startClientWebsock(webSocketMsgChannel: ptr Channel[string],
         elif msg.startsWith("LEAVE GAME"):
           stopGame()
           clientMsgChannel[].send("LEAVE GAME")
+          clientMsgChannel[].send("DROP")
         elif msg.startsWith("DROP GAME"):
           let nick = msg[9..^1]
-          clientMsgChannel[].send(fmt"DROP GAME{nick}")
+          clientMsgChannel[].send(fmt"DROP GAME")
           stopGame()
           if kInfo.clientDroppedCallback != nil:
             kInfo.clientDroppedCallback(nick.cstring, myPlayerNumber.cint)
@@ -338,6 +339,7 @@ proc startClientWebsock(webSocketMsgChannel: ptr Channel[string],
         elif msg.startsWith("ROM NAME"):
           romNameChannel[].send(msg[8..^1])
     except:
+      clientMsgChannel[].send("DROP")
       stopGame()
       let eMsg = getCurrentExceptionMsg()
       msgBoxError(mainwin, "Exception", eMsg)
@@ -347,7 +349,7 @@ proc startClientWebsock(webSocketMsgChannel: ptr Channel[string],
 proc runClientWebSocket(args: tuple[webSocketChannel: ptr Channel[string],
     clientMsgChannel: ptr Channel[string], romNameChannel: ptr Channel[
     string], userID: string]): void {.thread.} =
-  waitFor startClientWebsock(args.webSocketChannel, args.clientMsgChannel,
+  waitFor startFEWebsock(args.webSocketChannel, args.clientMsgChannel,
       args.romNameChannel, args.userID)
 
 proc startAuthWebsock(webSocketMsgChannel: ptr Channel[string],
@@ -389,7 +391,7 @@ proc startAuthWebsock(webSocketMsgChannel: ptr Channel[string],
         elif msg.startsWith("AUTH SUCCESS"):
           onConnected()
           webSocket.close()
-          webSocketClientThread.createThread(runClientWebSocket, (
+          webSocketFEThread.createThread(runClientWebSocket, (
             addr webSocketMsg, addr clientMsg,
             addr romNameMsg, userID))
           return
