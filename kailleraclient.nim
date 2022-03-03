@@ -1,3 +1,5 @@
+{.link: r"C:\Program Files (x86)\Windows Kits\10\Lib\10.0.19041.0\um\x86\windowscodecs.lib".}
+
 import std/[times, os, strutils, strformat, sugar, browsers, httpclient]
 import asyncdispatch
 import asynchttpserver
