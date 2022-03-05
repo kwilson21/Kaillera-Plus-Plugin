@@ -57,8 +57,8 @@ var
 
   # Threads
 
-  clientThread: Thread[tuple[clientMsgChannel: ptr Channel[string],
-      outputChannel: ptr Channel[string],
+  clientThread: Thread[tuple[webSocketMsgChannel: ptr Channel[string],
+      clientMsgChannel: ptr Channel[string], outputChannel: ptr Channel[string],
       serverAddress: string]]
   clientKaThread: Thread[ptr Channel[string]]
   gameThread: Thread[tuple[romNameChannel: ptr Channel[string], playerNumber,
@@ -82,6 +82,7 @@ var
   connectionType: int = 1 # 1 ~= LAN
   frameDelay: int
   myPlayerNumber: int
+  myPing: int
   totalPlayers: int
   loggedIn: bool = false
   startedGame: bool = false
@@ -126,6 +127,7 @@ proc callGameCallback(
 
 proc runClient(
   args: tuple[
+    webSocketMsgChannel: ptr Channel[string],
     clientMsgChannel: ptr Channel[string],
     outputChannel: ptr Channel[string],
     serverAddress: string
@@ -149,20 +151,28 @@ proc runClient(
       client.send(c2s, cMsg & "END")
       if cMsg == "DROP":
         client.disconnect(c2s)
-        return
+        break
 
     for recv in client.messages:
       let msg = recv.data[0..^4]
 
-      if msg.startsWith("FRAME DELAY"):
-        frameDelay.assign(parseInt($msg[^1]))
+      if msg.startsWith("PLAYER NUMBER"):
+        myPlayerNumber.assign(parseInt($msg[^1]))
+        args.webSocketMsgChannel[].send(msg)
+      elif msg.startsWith("FRAME DELAY"):
+        frameDelay.assign(parseInt(msg[11..^1]))
+        args.webSocketMsgChannel[].send(msg)
+      elif msg.startsWith("TOTAL PLAYERS"):
+        totalPlayers.assign(parseInt($msg[^1]))
+        args.webSocketMsgChannel[].send(msg)
+      elif msg.startsWith("USER PING"):
+        myPing.assign(parseInt(msg[9..^1]))
+        args.webSocketMsgChannel[].send(msg)
       elif msg.startsWith("PONG"):
         if not loggedIn:
           loggedIn.assign(true)
       elif msg.startsWith("PING"):
         client.send(c2s, "PONG" & "END")
-      elif msg.startsWith("PLAYER NUMBER"):
-        myPlayerNumber.assign(parseInt($msg[^1]))
       elif msg.startsWith("START GAME"):
         if startedGame:
           continue
@@ -174,8 +184,6 @@ proc runClient(
                 totalPlayers: totalPlayers))
       elif msg.startsWith("ALL READY"):
         gamePlaying.assign(true)
-      elif msg.startsWith("TOTAL PLAYERS"):
-        totalPlayers.assign(parseInt($msg[^1]))
       elif msg.startsWith("INPUT"):
         args.outputChannel[].send(msg[5..^1])
         frameCount += connectionType
@@ -298,16 +306,17 @@ proc startFEWebsock(webSocketMsgChannel: ptr Channel[string],
 
           initServer()
           serverThread.createThread(runServer)
-          clientThread.createThread(runClient, (clientMsg.addr,
-              outputChannel.addr, HOST))
-          clientKaThread.createThread(clientKeepAlive, clientMsg.addr)
+          clientThread.createThread(runClient, (webSocketMsgChannel,
+              clientMsgChannel, outputChannel.addr, HOST))
+          clientKaThread.createThread(clientKeepAlive, clientMsgChannel)
         elif msg.startsWith("LEAVE GAME"):
           stopGame()
           clientMsgChannel[].send("LEAVE GAME")
           clientMsgChannel[].send("DROP")
         elif msg.startsWith("DROP GAME"):
           let nick = msg[9..^1]
-          clientMsgChannel[].send(fmt"DROP GAME")
+          if startedGame:
+            clientMsgChannel[].send(fmt"DROP GAME")
           stopGame()
           if kInfo.clientDroppedCallback != nil:
             kInfo.clientDroppedCallback(nick.cstring, myPlayerNumber.cint)
@@ -315,8 +324,8 @@ proc startFEWebsock(webSocketMsgChannel: ptr Channel[string],
           clientMsgChannel[].send("START GAME")
         elif msg.startsWith("JOIN GAME"):
           let serverIP = msg[9..^1]
-          clientThread.createThread(runClient, (clientMsg.addr,
-              outputChannel.addr, serverIP))
+          clientThread.createThread(runClient, (webSocketMsgChannel,
+              clientMsgChannel, outputChannel.addr, serverIP))
           clientKaThread.createThread(clientKeepAlive, clientMsg.addr)
         elif msg.startsWith("GAME LIST"):
           # var
@@ -374,6 +383,17 @@ proc startAuthWebsock(webSocketMsgChannel: ptr Channel[string],
             disconnectButton.hide
             webSocket.close()
             return
+          elif msg.startsWith("PLAYER NUMBER"):
+            myPlayerNumber.assign(parseInt($msg[^1]))
+          elif msg.startsWith("FRAME DELAY"):
+            frameDelay.assign(parseInt(msg[11..^1]))
+            webSocketMsgChannel[].send(msg)
+          elif msg.startsWith("TOTAL PLAYERS"):
+            totalPlayers.assign(parseInt($msg[^1]))
+            webSocketMsgChannel[].send(msg)
+          elif msg.startsWith("USER PING"):
+            myPing.assign(parseInt(msg[9..^1]))
+            webSocketMsgChannel[].send(msg)
 
         if msg.startsWith("AUTH URL"):
           authUrl.assign(msg[8..^1])

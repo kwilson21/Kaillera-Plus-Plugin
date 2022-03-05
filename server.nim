@@ -11,6 +11,7 @@ type
   KailleraUser = object
     isOwner: bool
     connection: Connection
+    pCount: int
     ping: int
     delay: int
     playerNumber: int
@@ -32,7 +33,6 @@ var
   game: ref KailleraGame = nil
   isPlaying: bool = false
   controllerDataPacket: string
-  pCount: int = 0
 
 let
   connectionType: int = 1
@@ -68,8 +68,7 @@ proc resetGame(): void =
   game.controllerData.reset
 
 proc startGame(): void =
-  if game != nil and game.playerCount > 0 and not isPlaying and pCount ==
-      (4 * game.playerCount):
+  if game != nil and game.playerCount > 0 and not isPlaying:
     echo "Starting game..."
 
     for i in 0..<game.playerCount:
@@ -81,13 +80,13 @@ proc startGame(): void =
 
       game.delay = max(game.delay, user.delay)
 
+      user.connection.sendMsg(fmt"PLAYER NUMBER{user.playerNumber + 1}")
+      user.connection.sendMsg(fmt"FRAME DELAY{user.delay}")
+      user.connection.sendMsg(fmt"TOTAL PLAYERS{game.playerCount}")
+
+    for i in 0..<game.playerCount:
+      let user = game.users[i]
       user.tempDelay = game.delay - user.delay
-
-      user.totalDelay = game.delay + user.tempDelay + 5
-
-      user.connection.sendMsg(fmt"PLAYER NUMBER: {user.playerNumber + 1}")
-      user.connection.sendMsg(fmt"FRAME DELAY: {user.delay}")
-      user.connection.sendMsg(fmt"TOTAL PLAYERS: {game.playerCount}")
 
     broadcastMsg("START GAME")
     isPlaying = true
@@ -155,19 +154,25 @@ proc runServer*(): void {.thread.} =
             user.connection.sendMsg("PONG")
           elif msg.startsWith("PONG"):
             user.ping = (user.connection.stats.latencyTs.avg()*1000).int
-            inc pCount
+            inc user.pCount
+            if user.pCount == 4:
+              user.connection.sendMsg(fmt"USER PING{user.ping}")
           elif msg.startsWith("DROP GAME"):
             resetGame()
           elif msg.startsWith("LEAVE GAME"):
             resetGame()
             if user.isOwner:
+              for connection in server.connections:
+                server.disconnect(connection)
               return
             else:
               dec game.playerCount
+              server.disconnect(user.connection)
           elif msg.startsWith("START GAME"):
             if user.isOwner:
               startGame()
           elif msg.startsWith("READY TO PLAY"):
+            user.totalDelay = game.delay + user.tempDelay + 5
             broadcastMsg("ALL READY")
           elif msg.startsWith("INPUT"):
             if user.frameCount < user.totalDelay:
