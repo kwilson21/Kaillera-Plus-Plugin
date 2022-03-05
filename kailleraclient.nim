@@ -457,7 +457,7 @@ proc createFrame() =
           addr clientMsg, addr romNameMsg)))
   inner.add connectButton
 
-  confirmationCodeLabel = newLabel("Confirmation Code")
+  confirmationCodeLabel = newLabel("Authentication Code")
   inner.add confirmationCodeLabel
   confirmationCodeValueLabel = newLabel(authID)
   inner.add confirmationCodeValueLabel
