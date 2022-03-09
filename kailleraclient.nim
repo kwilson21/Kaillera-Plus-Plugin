@@ -474,8 +474,7 @@ proc createFrame() =
   show(mainwin)
   mainLoop()
 
-proc kailleraGetVersion(version: cstring): void {.dllexp, .} =
-
+proc kailleraGetVersion(version: cstring): void {.dllexp.} =
   let kVersion: cstring = "SSB64 Online v1"
 
   discard c_strcpy(version, kVersion)
@@ -502,7 +501,6 @@ proc kailleraSelectServerDialog(parent: HWND): void {.dllexp.} =
   createFrame()
 
 proc kailleraModifyPlayValues(values: pointer, size: cint): cint {.dllexp.} =
-
   var
     i: int
     w: int
